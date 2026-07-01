@@ -1,9 +1,22 @@
 # Cisco Secure Client SSO one-press autofill - design
 
 - Date: 2026-07-01
-- Status: approved (design); pending user spec review
+- Status: design signed off; implementation not started
 - Repo: `secure-client-sso-autofill`
 - Worked example: McGill VPN (`securevpn.mcgill.ca`)
+
+## Current status / resume point
+
+- **Stage:** design signed off; no implementation yet.
+- **Done:** research; this design; repo scaffolded and pushed (`README.md`,
+  `LICENSE`, `.gitignore`, `.gitattributes`, `docs/DESIGN.md`) at
+  `github.com/williamrobotma/secure-client-sso-autofill`.
+- **Next action:** create the implementation plan, then build `sso-autofill.ps1`
+  and `config.example.ps1`.
+- **Inputs still needed from user:** install `op` (1Password CLI) + PowerToys;
+  provide the 1Password vault + item name (into `config.local.ps1`).
+- **Constraint:** Claude cannot execute PowerShell (user deny-rule), so the
+  script is tested by the user (dry-run first, then live).
 
 ## Context
 
