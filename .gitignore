@@ -1,0 +1,19 @@
+# Local, user-specific config - never commit real vault/item names
+config.local.ps1
+*.local.ps1
+
+# Secrets / logs safety net
+*.log
+*.env
+.env
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
