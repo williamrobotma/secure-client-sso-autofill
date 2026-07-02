@@ -20,6 +20,12 @@ $OpVault = 'CHANGE-ME'
 # one-time-password (TOTP) field, i.e. code-based 2FA (not push/number-match).
 $OpItem = 'CHANGE-ME'
 
+# Path to the 1Password CLI. 'op' works if op is on PATH for the process that
+# launches this script. Set a FULL path (find it with: (Get-Command op).Source )
+# if a hotkey launch reports "op not found" - PowerToys started before op was
+# added to PATH inherits a stale PATH and can't resolve bare 'op'.
+$OpPath = 'op'
+
 # --- Timing (ms) - tune if a value lands on the wrong SSO screen ---
 
 # Wait after username + Enter (username screen -> password screen).

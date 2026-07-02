@@ -38,6 +38,17 @@ $ErrorActionPreference = 'Stop'
 # assigning it is harmless on Windows PowerShell 5.1).
 $PSNativeCommandUseErrorActionPreference = $false
 
+# --- Logging (secret-free) -------------------------------------------------
+# Stage + error trace to a gitignored log, reliable even under a hidden launch
+# where a modal dialog can hang the process invisibly. Records stage names and
+# error text ONLY - never a secret value (R3).
+$script:LogPath = Join-Path (Split-Path -Parent $PSCommandPath) 'sso-autofill.log'
+function Write-Log {
+    param([string]$Message)
+    $line = '{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+    Add-Content -Path $script:LogPath -Value $line -ErrorAction SilentlyContinue
+}
+
 # --- Win32 interop: enumerate top-level windows and control foreground focus ---
 # Guarded so re-running in the same session (e.g. repeated -SelfTest) does not
 # fail on a duplicate type definition.
@@ -258,13 +269,13 @@ function Get-OpSecrets {
     # TOTP code from `op item get --otp` (the JSON only carries the otpauth
     # seed, not the computed code). Two calls in one run = one Windows Hello
     # unlock. Values are returned in plain strings held only in memory.
-    param([string]$Vault, [string]$Item)
+    param([string]$Vault, [string]$Item, [string]$OpPath = 'op')
 
-    if (-not (Get-Command op -ErrorAction SilentlyContinue)) {
-        throw "'op' (1Password CLI) not found on PATH. Install it and enable the desktop-app integration."
+    if (-not (Get-Command $OpPath -ErrorAction SilentlyContinue)) {
+        throw "1Password CLI not found at '$OpPath'. Set OpPath in config.local.ps1 to the full op.exe path (find it with: (Get-Command op).Source)."
     }
 
-    $raw = & op item get $Item --vault $Vault --format json 2>$null
+    $raw = & $OpPath item get $Item --vault $Vault --format json 2>$null
     if ($LASTEXITCODE -ne 0) {
         throw "op item get failed (exit $LASTEXITCODE). Check op is unlocked and the vault/item names are correct."
     }
@@ -277,7 +288,7 @@ function Get-OpSecrets {
     $username = ($parsed.fields | Where-Object { $_.purpose -eq 'USERNAME' } | Select-Object -First 1).value
     $password = ($parsed.fields | Where-Object { $_.purpose -eq 'PASSWORD' } | Select-Object -First 1).value
 
-    $totp = & op item get $Item --vault $Vault --otp 2>$null
+    $totp = & $OpPath item get $Item --vault $Vault --otp 2>$null
     if ($LASTEXITCODE -ne 0) {
         throw "op item get --otp failed (exit $LASTEXITCODE). Does the item have a one-time-password (TOTP) field?"
     }
@@ -325,13 +336,16 @@ function Invoke-AcceptAgreement {
 # --- User-facing error (visible even under a hidden KBM launch) -------------
 
 function Show-FatalError {
-    # No console when launched hidden, so surface failures via a dialog. Message
+    # Log first (reliable), then a self-closing popup. A modal [MessageBox]::Show
+    # can hang invisibly under a hidden launch, holding secrets in memory; the
+    # WScript.Shell popup auto-closes after a timeout, so it never hangs. Message
     # text never contains a secret (R3).
     param([string]$Message)
-    [void][System.Windows.Forms.MessageBox]::Show(
-        $Message, 'SSO Autofill - error',
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Error)
+    Write-Log "ERROR: $Message"
+    try {
+        # Popup(text, secondsToWait, title, type); type 0x10 = Stop icon.
+        [void](New-Object -ComObject WScript.Shell).Popup($Message, 15, 'SSO Autofill - error', 0x10)
+    } catch { }
     # -ErrorAction Continue: report to the error stream (for visible test runs)
     # without re-throwing out of the catch block under $ErrorActionPreference.
     Write-Error $Message -ErrorAction Continue
@@ -345,6 +359,7 @@ if ($SelfTest) {
 }
 
 try {
+    Write-Log "=== run start (DryRun=$DryRun) ==="
     $scriptDir = Split-Path -Parent $PSCommandPath
     $configPath = Join-Path $scriptDir 'config.local.ps1'
     if (-not (Test-Path $configPath)) {
@@ -352,7 +367,7 @@ try {
     }
     . $configPath
 
-    $required = 'OpVault', 'OpItem', 'WindowTitleMatch', 'WindowProcessMatch',
+    $required = 'OpVault', 'OpItem', 'OpPath', 'WindowTitleMatch', 'WindowProcessMatch',
         'DelayAfterUsername', 'DelayAfterPassword', 'DelayAfterOtp',
         'HandleAgreement', 'AgreementTimeoutMs', 'AcceptKey'
     foreach ($name in $required) {
@@ -363,9 +378,11 @@ try {
     if ($OpVault -eq 'CHANGE-ME' -or $OpItem -eq 'CHANGE-ME') {
         throw 'Set OpVault and OpItem in config.local.ps1 (still at the CHANGE-ME placeholder).'
     }
+    Write-Log 'config.local.ps1 loaded and validated'
 
     # Retrieved in both modes to confirm the op path; typed masked in dry-run (R2).
-    $secrets = Get-OpSecrets -Vault $OpVault -Item $OpItem
+    $secrets = Get-OpSecrets -Vault $OpVault -Item $OpItem -OpPath $OpPath
+    Write-Log 'secrets retrieved (op unlock ok)'
 
     if ($DryRun) {
         $titleMatch = 'Notepad'
@@ -376,9 +393,11 @@ try {
     }
 
     $target = Find-SingleWindow -TitleMatch $titleMatch -ProcessNames $procNames -RequireCisco:(-not $DryRun)
+    Write-Log "target window matched (pid $($target.ProcessId))"
     [void][Win32]::SetForegroundWindow($target.Handle)
     Start-Sleep -Milliseconds 300
     Assert-Foreground -Handle $target.Handle -Step 'focus target'
+    Write-Log 'target is foreground; typing'
 
     if ($DryRun) {
         # R2: never type the plaintext; type a tag + asterisks of the same length.
@@ -409,6 +428,7 @@ try {
             -TimeoutMs $AgreementTimeoutMs -AcceptKey $AcceptKey
     }
 
+    Write-Log '=== run complete ==='
     if ($DryRun) {
         Write-Host 'Dry run complete: retrieved secrets and typed masked values into Notepad.'
     }

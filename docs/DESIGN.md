@@ -7,7 +7,7 @@
 
 ## Current status / resume point
 
-- **Stage:** implementation committed; MVP testing in progress.
+- **Stage:** dry-run validated end-to-end (2026-07-02); ready for live test.
 - **Done:** research; this design; repo scaffolded and pushed; `sso-autofill.ps1`,
   `config.example.ps1`, README built + security-reviewed + committed. `op` +
   PowerToys installed; 1Password CLI desktop integration enabled. Native
@@ -18,15 +18,31 @@
   is DEFERRED: run with `HandleAgreement = $false` and click Accept manually
   (one click). Security essentials R1-R4 stay in the MVP; only the flaky
   agreement automation is out.
-- **Next action:** set `OpVault` / `OpItem` (the McGill M365 login item holding
-  username+password+TOTP) and `HandleAgreement = $false` in config.local.ps1,
-  then test in order: `-SelfTest` (R4) -> `-DryRun` (Notepad) -> live (manual
-  Accept). Tune delays / window match.
+- **Next action:** config set (`OpVault=Personal`, `OpItem`=Mcgill item verified
+  USERNAME/PASSWORD/OTP, `OpPath`=full op.exe path, `HandleAgreement=$false`).
+  `-SelfTest` passes; `-DryRun` via the PowerToys hotkey completes end-to-end
+  (2026-07-02) - all three masked fields land in Notepad. Next: LIVE test - remove
+  `-DryRun` from the KBM Args, bring the Cisco login to front, press the chord,
+  HANDS OFF while it fills the three SSO screens, then click Accept manually.
+  Tune delays if a field lands on the wrong screen.
+- **Findings (2026-07-02):**
+  - `OpPath`: PowerToys was started before op's PATH entry, so a hotkey launch
+    inherited a stale PATH and couldn't find bare `op`. Fixed with a configurable
+    `OpPath` (full op.exe path in config.local.ps1).
+  - Focus stability: the run needs the target window foreground for the whole
+    ~7s (three fields + delays). Any focus change (e.g. Alt-tabbing away) makes
+    R1 abort safely before the next field - so: launch, then hands off.
+  - Error surface: a modal `MessageBox` hangs invisibly under a hidden launch
+    (holding secrets); replaced with a self-closing popup + a secret-free
+    `sso-autofill.log` stage/error trace (gitignored).
 - **Execution:** PowerShell runs here now (the earlier deny-rule is off).
   `-SelfTest` is side-effect-free and Claude-runnable - R4 verified 2026-07-01,
-  all cases pass. `-DryRun` and live runs are collaborative: they fetch real
-  secrets (Windows Hello unlock = user present) and live runs risk account
-  lockout, so they run with the user watching.
+  all cases pass. `-DryRun` and live runs must be launched interactively by the
+  user (own terminal or the PowerToys hotkey), NOT from a background/headless
+  shell: a background-spawned process can't grab window focus and hangs holding
+  secrets in memory (seen 2026-07-01). They fetch real secrets (Windows Hello =
+  user present) and risk account lockout, so the user launches and watches. See
+  [CLAUDE.md](../CLAUDE.md) for the working rules.
 - **Wrap-up condition (durable):** run the `security-review` skill on the
   pending changes before every commit / sync-point on this task.
 
