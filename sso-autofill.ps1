@@ -23,8 +23,8 @@
     character, then exit. Run this before first live use. (R4)
 
 .NOTES
-    Claude cannot execute PowerShell here (user deny-rule); this script is tested
-    by the user (dry-run first, then live).
+    Test order: -SelfTest (side-effect-free), then -DryRun (into Notepad), then
+    live. Runs that fetch secrets prompt Windows Hello once per run.
 #>
 [CmdletBinding()]
 param(

@@ -1,22 +1,32 @@
 # Cisco Secure Client SSO one-press autofill - design
 
 - Date: 2026-07-01
-- Status: design signed off; implementation not started
+- Status: script implemented + committed; MVP testing in progress
 - Repo: `secure-client-sso-autofill`
 - Worked example: McGill VPN (`securevpn.mcgill.ca`)
 
 ## Current status / resume point
 
-- **Stage:** implementation committed; awaiting user testing (dry-run, then live).
+- **Stage:** implementation committed; MVP testing in progress.
 - **Done:** research; this design; repo scaffolded and pushed; `sso-autofill.ps1`,
-  `config.example.ps1`, and README setup/testing/tuning built (this commit).
-- **Next action:** user runs the tests in order - `-SelfTest` (R4 escaping),
-  then `-DryRun` (into Notepad), then live - and tunes delays / window match /
-  agreement handling.
-- **Inputs still needed from user:** install `op` (1Password CLI) + PowerToys;
-  provide the 1Password vault + item name (into `config.local.ps1`).
-- **Constraint:** Claude cannot execute PowerShell (user deny-rule), so the
-  script is tested by the user (dry-run first, then live).
+  `config.example.ps1`, README built + security-reviewed + committed. `op` +
+  PowerToys installed; 1Password CLI desktop integration enabled. Native
+  1Password auto-type evaluated live and rejected (see "Why not native
+  1Password auto-type").
+- **MVP scope:** core one-press flow only - `op` fetch + type username/password/
+  TOTP into Cisco, each with Enter + a per-screen delay. Agreement auto-accept
+  is DEFERRED: run with `HandleAgreement = $false` and click Accept manually
+  (one click). Security essentials R1-R4 stay in the MVP; only the flaky
+  agreement automation is out.
+- **Next action:** set `OpVault` / `OpItem` (the McGill M365 login item holding
+  username+password+TOTP) and `HandleAgreement = $false` in config.local.ps1,
+  then test in order: `-SelfTest` (R4) -> `-DryRun` (Notepad) -> live (manual
+  Accept). Tune delays / window match.
+- **Execution:** PowerShell runs here now (the earlier deny-rule is off).
+  `-SelfTest` is side-effect-free and Claude-runnable - R4 verified 2026-07-01,
+  all cases pass. `-DryRun` and live runs are collaborative: they fetch real
+  secrets (Windows Hello unlock = user present) and live runs risk account
+  lockout, so they run with the user watching.
 - **Wrap-up condition (durable):** run the `security-review` skill on the
   pending changes before every commit / sync-point on this task.
 
@@ -45,6 +55,21 @@ switch: it requires `external-browser enable` on the ASA tunnel-group
 (`is_external="false"`, `acsamlcap=v2`) on every recent connect, so this is not
 available unilaterally. It would require a request to McGill IT and is out of
 scope. Documented so it is not re-investigated.
+
+### Why not native 1Password auto-type
+
+1Password's desktop Auto-type (Quick Access -> Auto-Type) *does* inject
+keystrokes into the Cisco embedded window - unlike the browser extension's
+inline "Fill in Browser" (`Ctrl+\`), which only reaches supported browsers and
+never the embedded WebView2. But Auto-type fires username -> Tab -> password ->
+Enter as one burst, assuming a single login form. McGill's Microsoft SSO is
+paginated (email, then password, then code on separate screens), so on the
+email-only screen the burst's Tab moves focus off the field and the auto-submit
+Enter follows whatever it landed on. Tested live 2026-07-01: auto-typing the
+McGill item on the email screen navigated to Microsoft's "which type of account
+do you need help with" page instead of advancing. Native auto-type is therefore
+rejected for this flow; the per-screen script (one field + Enter + delay per
+screen, no Tab) is what fits. Documented so it is not re-investigated.
 
 ## Goals
 
@@ -248,10 +273,11 @@ refines the section(s) named in its ID.
 
 ## Testing plan
 
-Note: the user's PowerShell deny-rule blocks Claude from executing the script;
-`op` and PowerToys are not yet installed. Testing is user-driven.
+Note: PowerShell runs here now and `op` / PowerToys are installed. Claude can
+run the side-effect-free `-SelfTest`; `-DryRun` and live runs are collaborative
+(Windows Hello unlock is the user's; live runs risk account lockout).
 
-1. Static review of the script (Claude).
+1. Static review of the script + `-SelfTest` (Claude). Done: R4 self-test passes.
 2. After installs: run with `-DryRun` - confirm one Windows Hello prompt,
    correct username/password/OTP retrieved (typed into Notepad), correct step
    sequencing and delays.
