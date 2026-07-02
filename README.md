@@ -11,8 +11,10 @@ the connection agreement. Worked example target: McGill University's VPN
 > the loop, but you should still read the script and understand what it does
 > before running it - it types your credentials into a window on your behalf.
 
-> **Status: early / work in progress.** The design is complete (see
-> [`docs/DESIGN.md`](docs/DESIGN.md)); the helper script is not committed yet.
+> **Status: ready for user testing.** The design is complete (see
+> [`docs/DESIGN.md`](docs/DESIGN.md)) and the script (`sso-autofill.ps1`) is
+> committed. It has not yet been run end-to-end against a live login (dry-run
+> first, then live - see [Testing](#testing)).
 
 ## The problem
 
@@ -52,12 +54,75 @@ Three small pieces:
 
 ## Setup
 
-Local, machine-specific settings (your vault and item names) live in a
-`config.local.ps1` that is **gitignored** - your identifiers are never
-committed. Copy `config.example.ps1` to `config.local.ps1` and edit it.
+### 1. Install prerequisites
 
-Full setup and tuning steps will be added with the script. See
-[`docs/DESIGN.md`](docs/DESIGN.md) for the current design.
+- **1Password CLI (`op`)** - install, then in the 1Password app enable
+  Settings -> Developer -> "Integrate with 1Password CLI", and Settings ->
+  Security -> "Allow Windows Hello to unlock 1Password".
+- **PowerToys** - install and enable Keyboard Manager.
+
+### 2. Configure
+
+Local, machine-specific settings (your vault and item names) live in
+`config.local.ps1`, which is **gitignored** - your identifiers are never
+committed.
+
+```powershell
+Copy-Item config.example.ps1 config.local.ps1
+```
+
+Edit `config.local.ps1` and set `$OpVault` and `$OpItem` to your vault and
+login item (the item must have username + password fields and a
+one-time-password / TOTP field - i.e. code-based 2FA, not push). Every other
+setting has a working default you can tune later.
+
+### 3. Bind the hotkey (PowerToys Keyboard Manager)
+
+Keyboard Manager -> Remap a shortcut -> Start App:
+
+- **App:** `powershell.exe` (or `pwsh.exe`)
+- **Args:** `-NoProfile -ExecutionPolicy Bypass -File "C:\Users\mawil\Developer\secure-client-sso-autofill\sso-autofill.ps1"`
+- **Visibility:** Hidden (no console flash)
+- **Shortcut:** your choice, must start with a modifier (e.g. `Ctrl+Alt+M`)
+
+PowerToys must be running for the shortcut to work. If the Cisco window is
+elevated, PowerToys must also be elevated (the Cisco UI normally runs at user
+level).
+
+## Testing
+
+Do this in order before relying on the hotkey. Errors surface as a dialog box
+even when the script is launched hidden.
+
+1. **Escaping self-test** (no `op`, no Cisco needed):
+   ```powershell
+   .\sso-autofill.ps1 -SelfTest
+   ```
+   Confirms SendKeys special-character escaping is correct (R4). Must print
+   "All SendKeys escaping self-tests passed."
+2. **Dry run** - open and focus **Notepad**, then:
+   ```powershell
+   .\sso-autofill.ps1 -DryRun
+   ```
+   Confirms one Windows Hello prompt and that username / password / OTP are
+   retrieved. It types **masked** values (`u:****`, `p:****`, `otp:****`) into
+   Notepad at the configured cadence - never the real secret.
+3. **Live** - start a McGill connect, bring the Cisco SSO login window to the
+   front, then press your hotkey. Confirm all three screens fill and the
+   agreement is accepted.
+
+### Tuning
+
+- **A value lands on the wrong screen** -> increase `DelayAfter*` in
+  `config.local.ps1`.
+- **"No matching window found"** -> adjust `WindowTitleMatch` /
+  `WindowProcessMatch` to the real Cisco login window (verify its title and
+  owning process live).
+- **Agreement not accepted** -> raise `AgreementTimeoutMs`, or set
+  `HandleAgreement = $false` to click Accept manually.
+
+See [`docs/DESIGN.md`](docs/DESIGN.md) for the full design and the security
+requirements (R1-R4) the script implements.
 
 ## Security
 

@@ -7,16 +7,18 @@
 
 ## Current status / resume point
 
-- **Stage:** design signed off; no implementation yet.
-- **Done:** research; this design; repo scaffolded and pushed (`README.md`,
-  `LICENSE`, `.gitignore`, `.gitattributes`, `docs/DESIGN.md`) at
-  `github.com/williamrobotma/secure-client-sso-autofill`.
-- **Next action:** create the implementation plan, then build `sso-autofill.ps1`
-  and `config.example.ps1`.
+- **Stage:** implementation committed; awaiting user testing (dry-run, then live).
+- **Done:** research; this design; repo scaffolded and pushed; `sso-autofill.ps1`,
+  `config.example.ps1`, and README setup/testing/tuning built (this commit).
+- **Next action:** user runs the tests in order - `-SelfTest` (R4 escaping),
+  then `-DryRun` (into Notepad), then live - and tunes delays / window match /
+  agreement handling.
 - **Inputs still needed from user:** install `op` (1Password CLI) + PowerToys;
   provide the 1Password vault + item name (into `config.local.ps1`).
 - **Constraint:** Claude cannot execute PowerShell (user deny-rule), so the
   script is tested by the user (dry-run first, then live).
+- **Wrap-up condition (durable):** run the `security-review` skill on the
+  pending changes before every commit / sync-point on this task.
 
 ## Context
 
@@ -120,15 +122,18 @@ The script dot-sources `config.local.ps1` and fails visibly if it is missing.
 
 ### Secret retrieval
 
-- One call: `op item get $OpItem --vault $OpVault --format json`, parse JSON for
-  the username field, password field, and the one-time-password field's current
-  `totp` value.
-- Rationale: one call = one Windows Hello prompt. (On Windows, each `op`
-  invocation in a fresh sub-shell re-authorizes; minimizing calls minimizes
-  prompts.)
+- Two `op` calls in one run (one Windows Hello unlock - the desktop-app session
+  is cached across calls in the same run):
+  1. `op item get $OpItem --vault $OpVault --format json` -> username + password
+     from the fields whose `purpose` is `USERNAME` / `PASSWORD`.
+  2. `op item get $OpItem --vault $OpVault --otp` -> the current TOTP code.
+- Why two calls, not one: the full-item JSON carries the OTP field's
+  `otpauth://` seed, not the computed 6-digit code, and `--otp` cannot be
+  combined with `--format json` / `--fields`. Sequential calls in one run reuse
+  a single unlock, so the "one Windows Hello prompt" goal still holds. (Resolves
+  the build-time open item; this was the spec's sanctioned fallback, promoted to
+  primary.)
 - Requires `op` desktop-app integration + Windows Hello unlock enabled.
-- Exact JSON field shape to be confirmed at build; fallback is separate
-  `op read` (username/password) + `op item get --otp` calls.
 
 ### Window targeting (the non-obvious safety point)
 
@@ -262,9 +267,20 @@ Note: the user's PowerShell deny-rule blocks Claude from executing the script;
 - `README.md` - overview + setup + KBM config + test checklist + tuning notes.
 - `docs/DESIGN.md` - this spec.
 
-## Open items (resolved at build/test)
+## Open items and build decisions
 
-- Exact `op` JSON field shape for username/password/TOTP.
-- Exact Cisco login window title/owning process (verify live).
-- Agreement window detection specifics.
+Resolved at build:
+- **`op` retrieval:** two calls (JSON for username/password by field `purpose`;
+  `--otp` for the current code), one Windows Hello unlock. See "Secret
+  retrieval".
+- **`-DryRun` is a script switch**, not a config value (an ad-hoc test toggle;
+  `config.example.ps1` notes this). `-SelfTest` added to satisfy R4's
+  "unit-checked before live use" without a separate test file.
+- **Fail-visible under hidden launch:** errors surface via a `MessageBox` (there
+  is no console when KBM runs the script hidden), with no secret in the text (R3).
+
+Still to verify live (user testing):
+- Exact Cisco login window title / owning process -> tune `WindowTitleMatch` /
+  `WindowProcessMatch`.
+- Agreement window detection (login vs agreement window) -> tune or disable.
 - 1Password vault + item reference (user-provided, into `config.local.ps1`).
