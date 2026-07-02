@@ -57,7 +57,9 @@
   user present) and risk account lockout, so the user launches and watches. See
   [CLAUDE.md](../CLAUDE.md) for the working rules.
 - **Wrap-up condition (durable):** run the `security-review` skill on the
-  pending changes before every commit / sync-point on this task.
+  pending changes before every commit / sync-point on this task. Enforced by
+  a PreToolUse hook that denies `git commit` without a review stamp for the
+  staged diff - see "Commit gate" in [CLAUDE.md](../CLAUDE.md).
 
 ## Context
 
@@ -167,9 +169,9 @@ The script dot-sources `config.local.ps1` and fails visibly if it is missing.
 | `DelayAfterUsername` | ms to wait after username+Enter | 2500 |
 | `DelayAfterPassword` | ms to wait after password+Enter | 2500 |
 | `DelayAfterOtp` | ms to wait after OTP+Enter | 2000 |
-| `WindowTitleMatch` | substring to match the Cisco login top-level window title | `Cisco Secure Client` |
+| `WindowTitleMatch` | substring to match the Cisco login top-level window title | `Cisco Secure Client - Login` |
 | `WindowProcessMatch` | owning process name(s) to match | `csc_ui.exe`, `acwebhelper.exe` |
-| `HandleAgreement` | attempt to accept the agreement | true |
+| `HandleAgreement` | attempt to accept the agreement | false (deferred for MVP) |
 | `AgreementTimeoutMs` | max wait for the agreement window | 15000 |
 | `AcceptKey` | keystroke sent to accept | `{ENTER}` |
 | `DryRun` | log steps, type into Notepad instead of Cisco, no secrets to Cisco | false |
@@ -201,8 +203,8 @@ would leak it. So the script does not assume focus:
   field (R1).
 - If zero or more than one match, abort and type nothing (fail-visible).
 - The embedded browser is hosted by `acwebhelper.exe` under the `csc_ui.exe`
-  top-level window; the exact owning window/title must be verified live during
-  testing, which is why both are config-driven.
+  top-level window; verified live 2026-07-02 (both are now the template
+  defaults), and both stay config-driven for other Cisco versions.
 
 ### Typing
 
@@ -334,12 +336,18 @@ Resolved at build:
 - **Window match (resolved live):** both the login window
   ("Cisco Secure Client - Login", acwebhelper) and the main window
   ("Cisco Secure Client", csc_ui) are Cisco-trusted, so `WindowTitleMatch` is
-  narrowed to `Cisco Secure Client - Login` (config.local) to hit exactly the
-  form window. The match runs BEFORE the op unlock (fail-fast).
+  narrowed to `Cisco Secure Client - Login` (config.local; now also the
+  config.example default) to hit exactly the form window. The match runs
+  BEFORE the op unlock (fail-fast).
 
 Still open (optional polish; MVP works without them):
 - Agreement auto-accept: deferred (`HandleAgreement=$false`, manual Accept);
   re-enable + tune `AgreementTimeoutMs` when ready.
-- One unlock prompt: lengthen 1Password auto-lock so the two `op` calls share it.
+- One unlock prompt: lengthen 1Password auto-lock so the two `op` calls share
+  it. Alternative lead (untested): a single `op inject` call resolving
+  `op://vault/item/field` references can return all three values in one
+  process/authorization - `?attr=otp` yields the *computed* TOTP in a secret
+  reference (unlike `op item get`'s JSON, which only has the seed). Needs one
+  live Hello-gated test; if it works, `Get-OpSecrets` collapses to one call.
 - Speed: lower `DelayAfter*` if the SSO screens load faster than the defaults.
 - 1Password vault + item reference (user-provided, into `config.local.ps1`).

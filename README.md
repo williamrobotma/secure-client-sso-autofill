@@ -11,10 +11,10 @@ the connection agreement. Worked example target: McGill University's VPN
 > the loop, but you should still read the script and understand what it does
 > before running it - it types your credentials into a window on your behalf.
 
-> **Status: dry-run validated; live testing in progress.** The design (see
+> **Status: live-validated (2026-07-02).** The design (see
 > [`docs/DESIGN.md`](docs/DESIGN.md)) and the script (`sso-autofill.ps1`) are
-> complete, and the dry-run path runs end-to-end. Live use against a real Cisco
-> login is being validated - see [Testing](#testing).
+> complete; the hotkey fills all three SSO screens against a real Cisco login.
+> Delay tuning and agreement auto-accept remain - see [Testing](#testing).
 
 ## The problem
 
@@ -33,8 +33,8 @@ is not available to end users unilaterally.
 Three small pieces:
 
 1. **`op` (1Password CLI)** - retrieves username, password, and the current
-   TOTP in a single call, unlocked by Windows Hello. Secrets never touch the
-   clipboard.
+   TOTP (two back-to-back calls in one run), unlocked by Windows Hello.
+   Secrets never touch the clipboard.
 2. **`sso-autofill.ps1`** (a PowerShell script) - finds and focuses the
    Cisco login window, then types each field with Enter between screens, and
    accepts the agreement.
@@ -85,7 +85,7 @@ Keyboard Manager -> **Add new remapping**. Set the **Action** to **Open app**
   `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`. A bare
   `powershell.exe` fails with "program not found" (Open app does not search
   `PATH`), and `pwsh.exe` is a Store alias PowerToys can't launch.
-- **Arguments:** `-NoProfile -ExecutionPolicy Bypass -File "C:\Users\mawil\Developer\secure-client-sso-autofill\sso-autofill.ps1"`
+- **Arguments:** `-NoProfile -ExecutionPolicy Bypass -File "<full path to your clone>\sso-autofill.ps1"`
   Append ` -DryRun` while testing (types masked values into Notepad); remove it
   for live use.
 - **Run as:** Normal. **Window visibility:** Hidden (no console flash).
@@ -109,8 +109,9 @@ self-closing popup - both work even when the script is launched hidden.
    ```powershell
    .\sso-autofill.ps1 -SelfTest
    ```
-   Confirms SendKeys special-character escaping is correct (R4). Must print
-   "All SendKeys escaping self-tests passed."
+   Confirms SendKeys special-character escaping is correct (R4) and runs
+   read-only window-matcher checks. Must print both
+   "All ... self-tests passed." lines.
 2. **Dry run** - open and focus **Notepad**, then:
    ```powershell
    .\sso-autofill.ps1 -DryRun
@@ -122,7 +123,7 @@ self-closing popup - both work even when the script is launched hidden.
    get to the SSO **username** screen, bring the Cisco login window to the front,
    press your hotkey, complete Windows Hello, then **keep hands off** (~7s) while
    it fills all three screens - any focus change aborts it (R1). With
-   `HandleAgreement = $false` (recommended until the flow is solid), click
+   `HandleAgreement = $false` (the default until the flow is solid), click
    **Accept** yourself.
 
 ### Tuning

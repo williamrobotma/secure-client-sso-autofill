@@ -7,6 +7,9 @@ config.local.ps1
 *.env
 .env
 
+# Machine state for the commit review gate (.claude/hooks/review-gate.ps1)
+.claude/review-stamp
+
 # Windows
 Thumbs.db
 Desktop.ini

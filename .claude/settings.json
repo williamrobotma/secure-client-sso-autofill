@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/review-gate.ps1\"",
+            "if": "Bash(git *)",
+            "timeout": 30,
+            "statusMessage": "Checking security-review stamp"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/verify-ps1.ps1\"",
+            "timeout": 60,
+            "statusMessage": "Verifying .ps1 (parse + SelfTest)"
+          }
+        ]
+      }
+    ]
+  }
+}

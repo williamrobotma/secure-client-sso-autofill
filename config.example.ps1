@@ -34,13 +34,17 @@ $DelayAfterUsername = 2500
 # Wait after password + Enter (password screen -> 2FA screen).
 $DelayAfterPassword = 2500
 
-# Wait after OTP + Enter (2FA screen -> connection agreement).
+# Wait after OTP + Enter (2FA screen -> connection agreement). Only used when
+# HandleAgreement is $true; otherwise the run ends right after the OTP.
 $DelayAfterOtp = 2000
 
 # --- Window targeting (the safety check - see R1 in docs/DESIGN.md) ---
 
 # Substring matched (case-insensitive) against the Cisco login window title.
-$WindowTitleMatch = 'Cisco Secure Client'
+# '- Login' pins the acwebhelper form window; bare 'Cisco Secure Client' also
+# matches the csc_ui main window and trips the multiple-match abort when both
+# are visible (found live 2026-07-02).
+$WindowTitleMatch = 'Cisco Secure Client - Login'
 
 # Owning process name(s) the window must belong to. The process is additionally
 # verified by image path (under a Cisco Program Files dir) or Authenticode
@@ -51,8 +55,10 @@ $WindowProcessMatch = @('csc_ui.exe', 'acwebhelper.exe')
 
 # --- Connection agreement (best-effort final step) ---
 
-# Attempt to accept the agreement after the OTP step.
-$HandleAgreement = $true
+# Attempt to accept the agreement after the OTP step. Deferred for the MVP
+# (flakiest step; see DESIGN.md): leave $false and click Accept manually (one
+# click); re-enable once the login flow is tuned.
+$HandleAgreement = $false
 
 # Max time (ms) to wait for the agreement window before giving up (then you
 # click Accept manually - one click).

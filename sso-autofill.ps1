@@ -20,7 +20,8 @@
 
 .PARAMETER SelfTest
     Unit-check the SendKeys escaping against a password containing every special
-    character, then exit. Run this before first live use. (R4)
+    character (R4), plus read-only window-matcher checks, then exit. Run this
+    before first live use.
 
 .NOTES
     Test order: -SelfTest (side-effect-free), then -DryRun (into Notepad), then
@@ -42,7 +43,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 # Stage + error trace to a gitignored log, reliable even under a hidden launch
 # where a modal dialog can hang the process invisibly. Records stage names and
 # error text ONLY - never a secret value (R3).
-$script:LogPath = Join-Path (Split-Path -Parent $PSCommandPath) 'sso-autofill.log'
+$script:LogPath = Join-Path $PSScriptRoot 'sso-autofill.log'
 function Write-Log {
     param([string]$Message)
     $line = '{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
@@ -81,20 +82,11 @@ Add-Type -AssemblyName System.Windows.Forms
 # --- SendKeys escaping (R4) ------------------------------------------------
 
 function ConvertTo-SendKeysLiteral {
-    # Escape every SendKeys metachar so the value types literally. Per-char
-    # build (not sequential Replace) so brace escapes are not re-escaped:
-    # '{' -> '{{}', '}' -> '{}}', '(' -> '{(}', etc.
+    # Escape every SendKeys metachar so the value types literally: '{' -> '{{}',
+    # '}' -> '{}}', '(' -> '{(}', etc. Single-pass regex replace, so the braces
+    # it inserts are never re-escaped.
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
-    $special = '+^%~(){}[]'
-    $sb = [System.Text.StringBuilder]::new()
-    foreach ($ch in $Text.ToCharArray()) {
-        if ($special.IndexOf($ch) -ge 0) {
-            [void]$sb.Append('{').Append($ch).Append('}')
-        } else {
-            [void]$sb.Append($ch)
-        }
-    }
-    return $sb.ToString()
+    return $Text -replace '[+^%~(){}\[\]]', '{$0}'
 }
 
 function Invoke-EscapingSelfTest {
@@ -155,27 +147,14 @@ function Get-VisibleWindows {
     return $script:__enumWindows
 }
 
-function Test-ProcessNameMatch {
-    param([System.Diagnostics.Process]$Proc, [string[]]$Names)
-    foreach ($n in $Names) {
-        if ($n -ieq $Proc.ProcessName -or $n -ieq "$($Proc.ProcessName).exe") {
-            return $true
-        }
-    }
-    return $false
-}
-
 function Test-TrustedCiscoProcess {
-    # R1: name match is necessary but not sufficient (spoofable). Require the
-    # image path under a Cisco Program Files dir, or a valid Authenticode
-    # signature from Cisco. If the path cannot be read, distrust (fail-visible).
-    param([int]$ProcessId, [string[]]$Names)
-    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if (-not $proc) { return $false }
-    if (-not (Test-ProcessNameMatch -Proc $proc -Names $Names)) { return $false }
-
+    # R1: the caller's name match is necessary but not sufficient (spoofable).
+    # Also require the image path under a Cisco Program Files dir, or a valid
+    # Authenticode signature from Cisco. If the path cannot be read, distrust
+    # (fail-visible).
+    param([Parameter(Mandatory)][System.Diagnostics.Process]$Proc)
     $path = $null
-    try { $path = $proc.Path } catch { $path = $null }
+    try { $path = $Proc.Path } catch { $path = $null }
     if (-not $path) { return $false }
 
     $ciscoDirs = @(
@@ -202,31 +181,31 @@ function Test-TrustedCiscoProcess {
 function Find-SingleWindow {
     # Return the one visible window matching title + process, or throw if zero
     # or more than one match (fail-visible: never guess which window to type in).
-    # -RequireCisco applies the strict process trust check (R1); without it
-    # (dry-run -> Notepad) match by process name only.
+    # -RequireCisco adds the strict image-path/signature check (R1); without it
+    # (dry-run -> Notepad) the process name match alone decides.
     param(
         [string]$TitleMatch,
         [string[]]$ProcessNames,
         [switch]$RequireCisco
     )
+    $names = $ProcessNames -replace '\.exe$', ''  # accept names with or without .exe
     $hits = @()
+    $seenTitles = @()
     foreach ($w in Get-VisibleWindows) {
+        $p = Get-Process -Id $w.ProcessId -ErrorAction SilentlyContinue
+        if (-not $p -or $names -notcontains $p.ProcessName) { continue }
+        # Collected before the title filter: the zero-match error shows what the
+        # target process(es) really had on screen (title-independent view).
+        $seenTitles += "'$($w.Title)'"
         if ($w.Title -notlike "*$TitleMatch*") { continue }
-        if ($RequireCisco) {
-            if (-not (Test-TrustedCiscoProcess -ProcessId $w.ProcessId -Names $ProcessNames)) {
-                continue
-            }
-        } else {
-            $p = Get-Process -Id $w.ProcessId -ErrorAction SilentlyContinue
-            if (-not $p -or -not (Test-ProcessNameMatch -Proc $p -Names $ProcessNames)) {
-                continue
-            }
-        }
+        if ($RequireCisco -and -not (Test-TrustedCiscoProcess -Proc $p)) { continue }
         $hits += $w
     }
     if ($hits.Count -eq 0) {
         throw ("No matching window found (title '*$TitleMatch*', process " +
-            "$($ProcessNames -join ', ')). Bring the target window to the front and retry.")
+            "$($ProcessNames -join ', ')). Windows owned by those processes: " +
+            $(if ($seenTitles) { $seenTitles -join ' | ' } else { '(none)' }) +
+            '. Bring the target window to the front and retry.')
     }
     if ($hits.Count -gt 1) {
         throw ("Multiple matching windows found ($($hits.Count)); aborting to " +
@@ -241,6 +220,38 @@ function Assert-Foreground {
     if ([Win32]::GetForegroundWindow() -ne $Handle) {
         throw "Foreground changed before '$Step'; aborting without typing (R1)."
     }
+}
+
+function Invoke-WindowMatchSelfTest {
+    # Read-only matcher checks (window enumeration only: no typing, no op).
+    # Targets explorer.exe, which always owns a titled window (Program Manager)
+    # in a desktop session. The positive Cisco match can only be verified live.
+    $results = [ordered]@{}
+
+    $zeroMsg = $null
+    try { Find-SingleWindow -TitleMatch 'zzz-selftest-no-window' -ProcessNames @('explorer.exe') | Out-Null }
+    catch { $zeroMsg = $_.Exception.Message }
+    $results['zero match throws; error lists the seen titles'] =
+        $zeroMsg -like 'No matching window*' -and $zeroMsg -notlike '*(none)*'
+
+    $bareMsg = $null
+    try { Find-SingleWindow -TitleMatch 'zzz-selftest-no-window' -ProcessNames @('explorer') | Out-Null }
+    catch { $bareMsg = $_.Exception.Message }
+    $results['process names accepted with or without .exe'] =
+        $bareMsg -like 'No matching window*' -and $bareMsg -notlike '*(none)*'
+
+    $results['non-Cisco process is distrusted (R1)'] =
+        -not (Test-TrustedCiscoProcess -Proc (Get-Process -Id $PID))
+
+    $failures = 0
+    foreach ($name in $results.Keys) {
+        if (-not $results[$name]) { $failures++ }
+        '{0}  {1}' -f $(if ($results[$name]) { 'PASS' } else { 'FAIL' }), $name | Write-Host
+    }
+    if ($failures -gt 0) {
+        throw "Window-matcher self-test FAILED ($failures case(s))."
+    }
+    Write-Host 'All window-matcher self-tests passed.'
 }
 
 # --- Typing ----------------------------------------------------------------
@@ -269,7 +280,7 @@ function Get-OpSecrets {
     # TOTP code from `op item get --otp` (the JSON only carries the otpauth
     # seed, not the computed code). Two calls in one run = one Windows Hello
     # unlock. Values are returned in plain strings held only in memory.
-    param([string]$Vault, [string]$Item, [string]$OpPath = 'op')
+    param([string]$Vault, [string]$Item, [string]$OpPath)
 
     if (-not (Get-Command $OpPath -ErrorAction SilentlyContinue)) {
         throw "1Password CLI not found at '$OpPath'. Set OpPath in config.local.ps1 to the full op.exe path (find it with: (Get-Command op).Source)."
@@ -314,8 +325,8 @@ function Invoke-AcceptAgreement {
         [int]$TimeoutMs,
         [string]$AcceptKey
     )
-    $deadline = [Environment]::TickCount + $TimeoutMs
-    while ([Environment]::TickCount -lt $deadline) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
         $win = $null
         try { $win = Find-SingleWindow -TitleMatch $TitleMatch -ProcessNames $ProcessNames -RequireCisco }
         catch { $win = $null }
@@ -330,7 +341,7 @@ function Invoke-AcceptAgreement {
         }
         Start-Sleep -Milliseconds 250
     }
-    Write-Verbose "Agreement window not confirmed within ${TimeoutMs}ms; accept it manually."
+    Write-Log "agreement window not confirmed within ${TimeoutMs}ms; accept it manually"
 }
 
 # --- User-facing error (visible even under a hidden KBM launch) -------------
@@ -356,13 +367,13 @@ function Show-FatalError {
 
 if ($SelfTest) {
     Invoke-EscapingSelfTest
+    Invoke-WindowMatchSelfTest
     return
 }
 
 try {
     Write-Log "=== run start (DryRun=$DryRun) ==="
-    $scriptDir = Split-Path -Parent $PSCommandPath
-    $configPath = Join-Path $scriptDir 'config.local.ps1'
+    $configPath = Join-Path $PSScriptRoot 'config.local.ps1'
     if (-not (Test-Path $configPath)) {
         throw "Missing config.local.ps1. Copy config.example.ps1 to config.local.ps1 and set OpVault/OpItem."
     }
@@ -392,14 +403,6 @@ try {
         $titleMatch = $WindowTitleMatch
         $procNames = $WindowProcessMatch
     }
-    # Log the actual titles of visible windows owned by the target process(es),
-    # so a failed match shows what was really on screen (title-independent view).
-    $seen = Get-VisibleWindows | Where-Object {
-        $cp = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
-        $cp -and (Test-ProcessNameMatch -Proc $cp -Names $procNames)
-    }
-    Write-Log ('visible windows owned by [' + ($procNames -join ',') + ']: ' +
-        (($seen | ForEach-Object { "'" + $_.Title + "'" }) -join ' | '))
     $target = Find-SingleWindow -TitleMatch $titleMatch -ProcessNames $procNames -RequireCisco:(-not $DryRun)
     Write-Log "target window matched (pid $($target.ProcessId))"
 
@@ -423,20 +426,21 @@ try {
         $otpText  = $secrets.Totp
     }
 
-    Write-Verbose 'Typing username'
+    Write-Log 'typing username'
     Send-KeysToTarget -Handle $target.Handle -Text $userText -Step 'username' -ThenEnter
     Start-Sleep -Milliseconds $DelayAfterUsername
 
-    Write-Verbose 'Typing password'
+    Write-Log 'typing password'
     Send-KeysToTarget -Handle $target.Handle -Text $passText -Step 'password' -ThenEnter
     Start-Sleep -Milliseconds $DelayAfterPassword
 
-    Write-Verbose 'Typing OTP'
+    Write-Log 'typing OTP'
     Send-KeysToTarget -Handle $target.Handle -Text $otpText -Step 'otp' -ThenEnter
-    Start-Sleep -Milliseconds $DelayAfterOtp
 
     if ($HandleAgreement -and -not $DryRun) {
-        Write-Verbose 'Waiting for agreement window'
+        # DelayAfterOtp only bridges OTP -> agreement; skipped when nothing follows.
+        Start-Sleep -Milliseconds $DelayAfterOtp
+        Write-Log 'waiting for agreement window'
         Invoke-AcceptAgreement -TitleMatch $WindowTitleMatch -ProcessNames $WindowProcessMatch `
             -TimeoutMs $AgreementTimeoutMs -AcceptKey $AcceptKey
     }
