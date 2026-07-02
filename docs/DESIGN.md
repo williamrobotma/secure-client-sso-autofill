@@ -27,7 +27,9 @@
   (1) one unlock prompt - lengthen 1Password auto-lock so the two `op` calls
   share it (the one-time "authorize PowerShell" consent won't recur);
   (2) tune `DelayAfter*` down if screens load fast (cautiously - lockout risk);
-  (3) decide whether to re-enable `HandleAgreement`.
+  (3) decide whether to re-enable `HandleAgreement`;
+  (4) work through [REVIEW-2026-07-02.md](REVIEW-2026-07-02.md) (post-implementation
+  code review: 2 design decisions + a mechanical fix batch; delete it when drained).
 - **Findings (2026-07-02):**
   - `OpPath`: PowerToys was started before op's PATH entry, so a hotkey launch
     inherited a stale PATH and couldn't find bare `op`. Fixed with a configurable
