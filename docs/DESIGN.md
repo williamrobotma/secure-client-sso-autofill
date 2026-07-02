@@ -321,16 +321,25 @@ run the side-effect-free `-SelfTest`; `-DryRun` and live runs are collaborative
 
 Resolved at build:
 - **`op` retrieval:** two calls (JSON for username/password by field `purpose`;
-  `--otp` for the current code), one Windows Hello unlock. See "Secret
-  retrieval".
+  `--otp` for the current code) - no single command returns the computed TOTP.
+  Shares one unlock only if 1Password's auto-lock window covers both; else two
+  prompts. See "Secret retrieval".
 - **`-DryRun` is a script switch**, not a config value (an ad-hoc test toggle;
   `config.example.ps1` notes this). `-SelfTest` added to satisfy R4's
   "unit-checked before live use" without a separate test file.
-- **Fail-visible under hidden launch:** errors surface via a `MessageBox` (there
-  is no console when KBM runs the script hidden), with no secret in the text (R3).
+- **Fail-visible under hidden launch:** a modal `MessageBox` hangs invisibly
+  under a hidden launch (holding secrets in memory), so errors now log to a
+  secret-free `sso-autofill.log` (gitignored) and show a self-closing topmost
+  popup - no secret in either (R3).
+- **Window match (resolved live):** both the login window
+  ("Cisco Secure Client - Login", acwebhelper) and the main window
+  ("Cisco Secure Client", csc_ui) are Cisco-trusted, so `WindowTitleMatch` is
+  narrowed to `Cisco Secure Client - Login` (config.local) to hit exactly the
+  form window. The match runs BEFORE the op unlock (fail-fast).
 
-Still to verify live (user testing):
-- Exact Cisco login window title / owning process -> tune `WindowTitleMatch` /
-  `WindowProcessMatch`.
-- Agreement window detection (login vs agreement window) -> tune or disable.
+Still open (optional polish; MVP works without them):
+- Agreement auto-accept: deferred (`HandleAgreement=$false`, manual Accept);
+  re-enable + tune `AgreementTimeoutMs` when ready.
+- One unlock prompt: lengthen 1Password auto-lock so the two `op` calls share it.
+- Speed: lower `DelayAfter*` if the SSO screens load faster than the defaults.
 - 1Password vault + item reference (user-provided, into `config.local.ps1`).
