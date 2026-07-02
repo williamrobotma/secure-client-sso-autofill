@@ -86,11 +86,11 @@ Three independently-understandable pieces:
 keypress
   -> KBM launches powershell (hidden)
   -> op item get --format json        (1 Windows Hello unlock)
-  -> locate + SetForegroundWindow(Cisco login window)
-  -> type username; {ENTER}; sleep D1
-  -> type password; {ENTER}; sleep D2
-  -> type TOTP;     {ENTER}; sleep D3
-  -> bounded-wait for agreement window; accept
+  -> locate + verify identity + SetForegroundWindow(Cisco window)  [R1]
+  -> re-verify foreground; type username; {ENTER}; sleep D1
+  -> re-verify foreground; type password; {ENTER}; sleep D2
+  -> re-verify foreground; type TOTP;     {ENTER}; sleep D3
+  -> bounded-wait for agreement window; re-verify; accept
 ```
 
 Secrets exist only in script memory for the run: no clipboard, no disk.
@@ -136,8 +136,10 @@ Launching the script can steal focus; typing a password into the wrong window
 would leak it. So the script does not assume focus:
 
 - Enumerate visible top-level windows (P/Invoke `EnumWindows`), pick the one
-  whose title contains `WindowTitleMatch` and/or whose owning process is in
-  `WindowProcessMatch`, then `SetForegroundWindow` it before typing.
+  whose title contains `WindowTitleMatch` **and** whose owning process is in
+  `WindowProcessMatch` (process verified by image path/signature, not name
+  alone - R1), then `SetForegroundWindow` it and re-verify before every
+  field (R1).
 - If zero or more than one match, abort and type nothing (fail-visible).
 - The embedded browser is hosted by `acwebhelper.exe` under the `csc_ui.exe`
   top-level window; the exact owning window/title must be verified live during
@@ -193,12 +195,48 @@ would leak it. So the script does not assume focus:
 - Personal identifiers (vault/item) live only in the gitignored
   `config.local.ps1`, never in the public repo.
 
+## Security requirements (from review)
+
+Binding requirements from the security review; verified at build/test. Each
+refines the section(s) named in its ID.
+
+- **R1 - Verify the target window's identity, and re-verify before every
+  field** (refines "Data flow", "Window targeting"). The window-target check is
+  the only thing preventing secrets from being typed elsewhere, so it must be
+  both strict and repeated:
+  - A match requires *both* the title (`WindowTitleMatch`) *and* the owning
+    process (`WindowProcessMatch`), and the process is verified by image path
+    (under `%ProgramFiles%\Cisco\...`) or Authenticode signature - never by
+    process name alone, which is spoofable.
+  - Immediately before each `SendWait` (username, password, OTP, agreement
+    accept), re-read `GetForegroundWindow` and confirm it is still the
+    validated target. If it changed, or if zero/many windows match, abort and
+    type nothing further (fail-visible). Focus is not assumed to survive the
+    inter-field delays.
+- **R2 - `-DryRun` must not expose the real password** (refines
+  "Configuration", "Testing plan"). Dry-run types masked values (length or
+  asterisks), never the plaintext secret, into Notepad. Confirming retrieval is
+  done on the masked form; plaintext is never placed anywhere it can be saved to
+  disk.
+- **R3 - No secret reaches logs, transcripts, or error text** (refines "Error
+  handling"). No `Start-Transcript`; no `-Verbose` on the typing calls; no
+  interpolation of a typed value into any message or `$_`. `*.log` is
+  gitignored, but the requirement is that a secret is never written to a log in
+  the first place.
+- **R4 - `SendKeys` escaping is unit-checked; treat `SendKeys` as the weakest
+  link** (refines "Typing"). Escaping of `+ ^ % ~ ( ) { } [ ]` is verified
+  against a password containing every special character before live use (an
+  unescaped `~`/`%`/`(` injects Enter/Alt/grouping). `SendKeys` can also
+  drop/reorder keys under load; a dropped password character is a failed login,
+  and repeated failures can lock the account - so typing is validated under
+  `-DryRun` first.
+
 ## Risks and mitigations
 
 | Risk | Mitigation |
 | --- | --- |
 | Slow page load -> value lands on wrong screen -> failed login; repeated failures can lock the McGill account | Generous default delays; `-DryRun` validated first; user tests before live use; delays tunable |
-| Launch steals focus -> keys go to wrong window | Script locates and re-focuses the Cisco window before typing; aborts if not found |
+| Launch steals focus -> keys go to wrong window | Script verifies the Cisco window's identity and re-verifies foreground before every field (R1); aborts if not found or focus changed |
 | PowerToys not running | KBM only works with PowerToys running in background (documented) |
 | Elevated Cisco window | KBM won't fire over an elevated window unless PowerToys is elevated; Cisco UI normally runs at user level (documented, verify if issues) |
 | Agreement window detection flaky | Bounded wait + fail-visible exit; `HandleAgreement=false` to click manually |
