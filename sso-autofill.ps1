@@ -213,7 +213,7 @@ function Find-SingleWindow {
     foreach ($w in Get-VisibleWindows) {
         if ($w.Title -notlike "*$TitleMatch*") { continue }
         if ($RequireCisco) {
-            if (-not (Test-TrustedCiscoProcess -ProcessId $w.ProcessId -ProcessNames $ProcessNames)) {
+            if (-not (Test-TrustedCiscoProcess -ProcessId $w.ProcessId -Names $ProcessNames)) {
                 continue
             }
         } else {
@@ -343,8 +343,9 @@ function Show-FatalError {
     param([string]$Message)
     Write-Log "ERROR: $Message"
     try {
-        # Popup(text, secondsToWait, title, type); type 0x10 = Stop icon.
-        [void](New-Object -ComObject WScript.Shell).Popup($Message, 15, 'SSO Autofill - error', 0x10)
+        # Popup(text, secondsToWait, title, type). 0x10 = Stop icon; 0x1000 =
+        # system-modal (topmost) so it shows above the Cisco window, not under it.
+        [void](New-Object -ComObject WScript.Shell).Popup($Message, 15, 'SSO Autofill - error', 0x1010)
     } catch { }
     # -ErrorAction Continue: report to the error stream (for visible test runs)
     # without re-throwing out of the catch block under $ErrorActionPreference.
@@ -380,10 +381,10 @@ try {
     }
     Write-Log 'config.local.ps1 loaded and validated'
 
-    # Retrieved in both modes to confirm the op path; typed masked in dry-run (R2).
-    $secrets = Get-OpSecrets -Vault $OpVault -Item $OpItem -OpPath $OpPath
-    Write-Log 'secrets retrieved (op unlock ok)'
-
+    # Match the target window BEFORE fetching secrets. It is present at hotkey
+    # time (verified live); matching first fails fast (no Windows Hello prompt)
+    # if it is missing; and the Cisco login window's title can change during the
+    # ~10s op/Hello wait, so matching afterward is unreliable.
     if ($DryRun) {
         $titleMatch = 'Notepad'
         $procNames = @('notepad')
@@ -391,9 +392,21 @@ try {
         $titleMatch = $WindowTitleMatch
         $procNames = $WindowProcessMatch
     }
-
+    # Log the actual titles of visible windows owned by the target process(es),
+    # so a failed match shows what was really on screen (title-independent view).
+    $seen = Get-VisibleWindows | Where-Object {
+        $cp = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
+        $cp -and (Test-ProcessNameMatch -Proc $cp -Names $procNames)
+    }
+    Write-Log ('visible windows owned by [' + ($procNames -join ',') + ']: ' +
+        (($seen | ForEach-Object { "'" + $_.Title + "'" }) -join ' | '))
     $target = Find-SingleWindow -TitleMatch $titleMatch -ProcessNames $procNames -RequireCisco:(-not $DryRun)
     Write-Log "target window matched (pid $($target.ProcessId))"
+
+    # Retrieved in both modes to confirm the op path; typed masked in dry-run (R2).
+    $secrets = Get-OpSecrets -Vault $OpVault -Item $OpItem -OpPath $OpPath
+    Write-Log 'secrets retrieved (op unlock ok)'
+
     [void][Win32]::SetForegroundWindow($target.Handle)
     Start-Sleep -Milliseconds 300
     Assert-Foreground -Handle $target.Handle -Step 'focus target'

@@ -7,7 +7,9 @@
 
 ## Current status / resume point
 
-- **Stage:** dry-run validated end-to-end (2026-07-02); ready for live test.
+- **Stage:** LIVE-validated (2026-07-02) - the MVP fills all three SSO screens
+  via the hotkey and connects. Tuning (prompts/delays) + optional agreement
+  auto-accept remain.
 - **Done:** research; this design; repo scaffolded and pushed; `sso-autofill.ps1`,
   `config.example.ps1`, README built + security-reviewed + committed. `op` +
   PowerToys installed; 1Password CLI desktop integration enabled. Native
@@ -18,13 +20,14 @@
   is DEFERRED: run with `HandleAgreement = $false` and click Accept manually
   (one click). Security essentials R1-R4 stay in the MVP; only the flaky
   agreement automation is out.
-- **Next action:** config set (`OpVault=Personal`, `OpItem`=Mcgill item verified
-  USERNAME/PASSWORD/OTP, `OpPath`=full op.exe path, `HandleAgreement=$false`).
-  `-SelfTest` passes; `-DryRun` via the PowerToys hotkey completes end-to-end
-  (2026-07-02) - all three masked fields land in Notepad. Next: LIVE test - remove
-  `-DryRun` from the KBM Args, bring the Cisco login to front, press the chord,
-  HANDS OFF while it fills the three SSO screens, then click Accept manually.
-  Tune delays if a field lands on the wrong screen.
+- **Next action:** LIVE run succeeded (2026-07-02): matched the acwebhelper
+  login window, filled username/password/TOTP, connected (Accept clicked
+  manually). `WindowTitleMatch` set to `Cisco Secure Client - Login` in
+  config.local (uniquely the acwebhelper form window). Remaining polish:
+  (1) one unlock prompt - lengthen 1Password auto-lock so the two `op` calls
+  share it (the one-time "authorize PowerShell" consent won't recur);
+  (2) tune `DelayAfter*` down if screens load fast (cautiously - lockout risk);
+  (3) decide whether to re-enable `HandleAgreement`.
 - **Findings (2026-07-02):**
   - `OpPath`: PowerToys was started before op's PATH entry, so a hotkey launch
     inherited a stale PATH and couldn't find bare `op`. Fixed with a configurable
@@ -35,6 +38,16 @@
   - Error surface: a modal `MessageBox` hangs invisibly under a hidden launch
     (holding secrets); replaced with a self-closing popup + a secret-free
     `sso-autofill.log` stage/error trace (gitignored).
+  - Window-match bug (root cause of every live "no matching window"):
+    `Find-SingleWindow` called `Test-TrustedCiscoProcess -ProcessNames`, but that
+    parameter is `-Names` -> `$Names` unbound -> R1 name check always false ->
+    zero trusted matches. Dry-run and the standalone diagnostics don't use the
+    trust check, so they masked it. Fixed to `-Names` (verified 1 trusted match
+    live). Also reordered to match the window BEFORE `op`/Hello (fail-fast; the
+    login window's title can change during the ~10s unlock).
+  - Prompts: two `op` calls (item JSON + `--otp`; no single command returns the
+    computed TOTP) can mean two unlocks unless 1Password's unlock window covers
+    both. Typing delays (~7s) are tunable in config.local.ps1.
 - **Execution:** PowerShell runs here now (the earlier deny-rule is off).
   `-SelfTest` is side-effect-free and Claude-runnable - R4 verified 2026-07-01,
   all cases pass. `-DryRun` and live runs must be launched interactively by the
