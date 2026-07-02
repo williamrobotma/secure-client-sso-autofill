@@ -11,10 +11,10 @@ the connection agreement. Worked example target: McGill University's VPN
 > the loop, but you should still read the script and understand what it does
 > before running it - it types your credentials into a window on your behalf.
 
-> **Status: ready for user testing.** The design is complete (see
-> [`docs/DESIGN.md`](docs/DESIGN.md)) and the script (`sso-autofill.ps1`) is
-> committed. It has not yet been run end-to-end against a live login (dry-run
-> first, then live - see [Testing](#testing)).
+> **Status: dry-run validated; live testing in progress.** The design (see
+> [`docs/DESIGN.md`](docs/DESIGN.md)) and the script (`sso-autofill.ps1`) are
+> complete, and the dry-run path runs end-to-end. Live use against a real Cisco
+> login is being validated - see [Testing](#testing).
 
 ## The problem
 
@@ -39,7 +39,7 @@ Three small pieces:
    Cisco login window, then types each field with Enter between screens, and
    accepts the agreement.
 3. **PowerToys Keyboard Manager** - binds a hotkey to launch the script
-   ("Remap shortcut -> Start App", run hidden).
+   (Keyboard Manager's "Open app" action, run hidden).
 
 ## Requirements
 
@@ -78,21 +78,32 @@ setting has a working default you can tune later.
 
 ### 3. Bind the hotkey (PowerToys Keyboard Manager)
 
-Keyboard Manager -> Remap a shortcut -> Start App:
+Keyboard Manager -> **Add new remapping**. Set the **Action** to **Open app**
+(labelled "Start App" or "Run Program" in some builds):
 
-- **App:** `powershell.exe` (or `pwsh.exe`)
-- **Args:** `-NoProfile -ExecutionPolicy Bypass -File "C:\Users\mawil\Developer\secure-client-sso-autofill\sso-autofill.ps1"`
-- **Visibility:** Hidden (no console flash)
-- **Shortcut:** your choice, must start with a modifier (e.g. `Ctrl+Alt+M`)
+- **Program path:** the FULL path to Windows PowerShell -
+  `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`. A bare
+  `powershell.exe` fails with "program not found" (Open app does not search
+  `PATH`), and `pwsh.exe` is a Store alias PowerToys can't launch.
+- **Arguments:** `-NoProfile -ExecutionPolicy Bypass -File "C:\Users\mawil\Developer\secure-client-sso-autofill\sso-autofill.ps1"`
+  Append ` -DryRun` while testing (types masked values into Notepad); remove it
+  for live use.
+- **Run as:** Normal. **Window visibility:** Hidden (no console flash).
+- **Trigger:** must start with a modifier, e.g. `Ctrl+Alt+M`. If you record it by
+  pressing keys, PowerToys captures the *specific* side (`Ctrl (Left)`); change
+  each key's dropdown to plain `Ctrl` / `Alt` if you want either side to work.
 
-PowerToys must be running for the shortcut to work. If the Cisco window is
-elevated, PowerToys must also be elevated (the Cisco UI normally runs at user
-level).
+PowerToys must be running for the shortcut to fire. If it was started before
+`op` was added to `PATH`, the launched script won't find `op` - set `$OpPath`
+to the full `op.exe` path in `config.local.ps1` (see Tuning). If the Cisco
+window is elevated, PowerToys must also be elevated (the Cisco UI normally runs
+at user level).
 
 ## Testing
 
-Do this in order before relying on the hotkey. Errors surface as a dialog box
-even when the script is launched hidden.
+Do this in order before relying on the hotkey. Every run appends a secret-free
+stage/error trace to `sso-autofill.log` (gitignored), and errors also show a
+self-closing popup - both work even when the script is launched hidden.
 
 1. **Escaping self-test** (no `op`, no Cisco needed):
    ```powershell
@@ -107,17 +118,24 @@ even when the script is launched hidden.
    Confirms one Windows Hello prompt and that username / password / OTP are
    retrieved. It types **masked** values (`u:****`, `p:****`, `otp:****`) into
    Notepad at the configured cadence - never the real secret.
-3. **Live** - start a McGill connect, bring the Cisco SSO login window to the
-   front, then press your hotkey. Confirm all three screens fill and the
-   agreement is accepted.
+3. **Live** - remove `-DryRun` from the hotkey Args. Start a McGill connect,
+   get to the SSO **username** screen, bring the Cisco login window to the front,
+   press your hotkey, complete Windows Hello, then **keep hands off** (~7s) while
+   it fills all three screens - any focus change aborts it (R1). With
+   `HandleAgreement = $false` (recommended until the flow is solid), click
+   **Accept** yourself.
 
 ### Tuning
 
 - **A value lands on the wrong screen** -> increase `DelayAfter*` in
   `config.local.ps1`.
-- **"No matching window found"** -> adjust `WindowTitleMatch` /
-  `WindowProcessMatch` to the real Cisco login window (verify its title and
-  owning process live).
+- **"op not found" on a hotkey launch** -> set `$OpPath` in `config.local.ps1`
+  to the full `op.exe` path (find it with `(Get-Command op).Source`). A process
+  started before `op` was on `PATH` (e.g. PowerToys) inherits a stale `PATH` and
+  can't resolve bare `op`.
+- **"No matching window found"** -> check `sso-autofill.log` for the stage it
+  reached, then adjust `WindowTitleMatch` / `WindowProcessMatch` to the real
+  Cisco login window (verify its title and owning process live).
 - **Agreement not accepted** -> raise `AgreementTimeoutMs`, or set
   `HandleAgreement = $false` to click Accept manually.
 

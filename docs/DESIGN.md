@@ -220,16 +220,11 @@ would leak it. So the script does not assume focus:
 
 ## Prerequisites and setup
 
-1. Install PowerToys (not currently installed). Enable Keyboard Manager.
-2. Install `op` (1Password CLI). In the 1Password app: Settings > Developer >
-   "Integrate with 1Password CLI"; Settings > Security > "Allow Windows Hello
-   to unlock 1Password".
-3. Copy `config.example.ps1` to `config.local.ps1`; set the vault + item.
-4. PowerToys KBM: Remap a shortcut -> Start App:
-   - App: `powershell.exe` (or `pwsh.exe`)
-   - Args: `-NoProfile -ExecutionPolicy Bypass -File "C:\Users\mawil\Developer\secure-client-sso-autofill\sso-autofill.ps1"`
-   - Visibility: hidden
-   - Chord: user's choice (must start with a modifier; e.g. Ctrl+Alt+M)
+The step-by-step setup (install `op` + PowerToys, create `config.local.ps1`,
+bind the Keyboard Manager hotkey) is the user-facing guide and lives in
+[../README.md](../README.md) as the **single source of truth** - deliberately
+not duplicated here, so the two can't drift. This doc is the design + security
+rationale; the README is how to install and run it.
 
 ## Security considerations
 
