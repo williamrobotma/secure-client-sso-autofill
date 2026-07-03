@@ -9,13 +9,12 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 $hook = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $file = "$($hook.tool_input.file_path)"
-if (-not $file) { $file = "$($hook.tool_response.filePath)" }
-if ($file -notlike '*.ps1' -or -not (Test-Path $file)) { exit 0 }
+if ($file -notlike '*.ps1' -or -not (Test-Path -LiteralPath $file)) { exit 0 }
 
 $tokens = $null
 $parseErrors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile(
-    (Resolve-Path $file).Path, [ref]$tokens, [ref]$parseErrors)
+    (Resolve-Path -LiteralPath $file).Path, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) {
     foreach ($e in $parseErrors) {
         [Console]::Error.WriteLine("parse error: $($e.Message) (line $($e.Extent.StartLineNumber))")
@@ -24,10 +23,22 @@ if ($parseErrors.Count) {
 }
 
 # Any .ps1 change (worker, config template, hooks) re-runs the worker's
-# side-effect-free unit suite; it is fast and catches cross-file breakage.
+# side-effect-free unit suite (SendKeys escaping, window matcher, and the
+# config.example.ps1 <-> required-names contract) - fast, and it catches the
+# config-template drift that would otherwise surface only at a live run.
+#
+# EAP is relaxed around the child call: a failing -SelfTest throws in the child,
+# whose stderr would otherwise promote to a terminating NativeCommandError here
+# (this hook runs under EAP=Stop) and kill the hook with exit 1 - but PostToolUse
+# only feeds exit 2 back to Claude. Relaxing EAP lets the full 2>&1 output land
+# in $output so the exit code, not the stderr write, decides.
+$eap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass `
     -File (Join-Path $repoRoot 'sso-autofill.ps1') -SelfTest 2>&1
-if ($LASTEXITCODE -ne 0) {
+$selfTestExit = $LASTEXITCODE
+$ErrorActionPreference = $eap
+if ($selfTestExit -ne 0) {
     [Console]::Error.WriteLine(($output | Out-String))
     [Console]::Error.WriteLine('sso-autofill.ps1 -SelfTest FAILED after this edit')
     exit 2

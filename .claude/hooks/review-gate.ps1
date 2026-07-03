@@ -24,9 +24,15 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $stampPath = Join-Path $repoRoot '.claude\review-stamp'
 
 function Get-StagedDiffHash {
-    $diff = (& git -C $repoRoot diff --cached) -join "`n"
+    # -Stamp calls with no arg (capture here); the gate passes the diff it
+    # already captured for the emptiness check, so `git diff --cached` runs
+    # once per gated commit rather than twice.
+    param([string]$Diff)
+    if (-not $PSBoundParameters.ContainsKey('Diff')) {
+        $Diff = (& git -C $repoRoot diff --cached) -join "`n"
+    }
     $sha = [System.Security.Cryptography.SHA256]::Create()
-    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($diff))
+    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Diff))
     return [System.BitConverter]::ToString($hash) -replace '-', ''
 }
 
@@ -69,10 +75,11 @@ try {
             'review stamp only covers the staged diff. git add -A in its own ' +
             'command, re-run the security review, re-stamp, then commit.')
     }
-    if (-not ((& git -C $repoRoot diff --cached) -join '')) { exit 0 }  # nothing to commit: let git report it
+    $stagedDiff = (& git -C $repoRoot diff --cached) -join "`n"
+    if (-not $stagedDiff) { exit 0 }  # nothing to commit: let git report it
 
     $stamped = if (Test-Path $stampPath) { "$(Get-Content $stampPath -TotalCount 1)".Trim() } else { '' }
-    if ((Get-StagedDiffHash) -eq $stamped) { exit 0 }
+    if ((Get-StagedDiffHash -Diff $stagedDiff) -eq $stamped) { exit 0 }
 
     Deny ('Security-review gate: the staged diff has no matching review stamp ' +
         '(DESIGN.md wrap-up condition). Run the security-review skill on the ' +

@@ -5,7 +5,7 @@
     from 1Password, then accept the connection agreement.
 
 .DESCRIPTION
-    Pulls secrets from 1Password via the `op` CLI (one Windows Hello unlock),
+    Pulls secrets from 1Password via the `op` CLI (under Windows Hello),
     finds and focuses the Cisco login window, and types each field with Enter
     between screens on fixed, tunable delays. Secrets stay in memory for the run:
     never on the clipboard, never on disk.
@@ -20,12 +20,14 @@
 
 .PARAMETER SelfTest
     Unit-check the SendKeys escaping against a password containing every special
-    character (R4), plus read-only window-matcher checks, then exit. Run this
+    character (R4), plus read-only window-matcher checks and a config-contract
+    check (config.example.ps1 defines every required name), then exit. Run this
     before first live use.
 
 .NOTES
     Test order: -SelfTest (side-effect-free), then -DryRun (into Notepad), then
-    live. Runs that fetch secrets prompt Windows Hello once per run.
+    live. Runs that fetch secrets prompt Windows Hello once or twice (the two
+    `op` calls share one unlock only if 1Password's auto-lock window covers both).
 #>
 [CmdletBinding()]
 param(
@@ -34,9 +36,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-# Keep native-command failures out of the exception path so the op calls below
-# report via our own $LASTEXITCODE checks (this variable only exists in PS 7.3+;
-# assigning it is harmless on Windows PowerShell 5.1).
+# On PS 7.3+ this keeps native-command stderr out of the exception path so the
+# op calls report via our own $LASTEXITCODE checks. It is an inert ordinary
+# variable on Windows PowerShell 5.1 (assigning it is harmless); there, Invoke-Op
+# scopes $ErrorActionPreference locally to get the same effect.
 $PSNativeCommandUseErrorActionPreference = $false
 
 # --- Logging (secret-free) -------------------------------------------------
@@ -122,9 +125,12 @@ function Invoke-EscapingSelfTest {
 
 function Get-VisibleWindows {
     # All visible top-level windows with a non-empty title, as objects with
-    # Handle / Title / ProcessId. Uses a script-scoped accumulator because the
-    # EnumWindows callback runs from unmanaged code.
-    $script:__enumWindows = New-Object System.Collections.Generic.List[object]
+    # Handle / Title / ProcessId. The EnumWindows callback runs synchronously on
+    # this thread, so it resolves $windows from this enclosing scope (dynamic
+    # scoping) and .Add()s to it - no script-scoped state needed. (Only .Add
+    # works; assigning $windows inside the callback would make a callback-local
+    # copy.)
+    $windows = New-Object System.Collections.Generic.List[object]
     $callback = [Win32+EnumWindowsProc] {
         param([IntPtr]$hWnd, [IntPtr]$lParam)
         if ([Win32]::IsWindowVisible($hWnd)) {
@@ -134,7 +140,7 @@ function Get-VisibleWindows {
                 [void][Win32]::GetWindowText($hWnd, $sb, $sb.Capacity)
                 $procId = [uint32]0
                 [void][Win32]::GetWindowThreadProcessId($hWnd, [ref]$procId)
-                $script:__enumWindows.Add([pscustomobject]@{
+                $windows.Add([pscustomobject]@{
                     Handle    = $hWnd
                     Title     = $sb.ToString()
                     ProcessId = [int]$procId
@@ -144,7 +150,7 @@ function Get-VisibleWindows {
         return $true
     }
     [void][Win32]::EnumWindows($callback, [IntPtr]::Zero)
-    return $script:__enumWindows
+    return $windows
 }
 
 function Test-TrustedCiscoProcess {
@@ -157,12 +163,12 @@ function Test-TrustedCiscoProcess {
     try { $path = $Proc.Path } catch { $path = $null }
     if (-not $path) { return $false }
 
-    $ciscoDirs = @(
-        (Join-Path $env:ProgramFiles 'Cisco'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Cisco')
-    )
-    foreach ($d in $ciscoDirs) {
-        if (-not $d) { continue }
+    # Raw roots (not joined yet): on 32-bit Windows ${env:ProgramFiles(x86)} is
+    # $null, and Join-Path $null throws - so guard each root before joining.
+    $ciscoRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    foreach ($root in $ciscoRoots) {
+        if (-not $root) { continue }
+        $d = Join-Path $root 'Cisco'
         # Trailing separator: match the Cisco dir's *contents*, not a sibling
         # like 'Program Files\Cisco Evil\' that shares the 'Cisco' prefix.
         $prefix = $d.TrimEnd('\') + '\'
@@ -197,7 +203,9 @@ function Find-SingleWindow {
         # Collected before the title filter: the zero-match error shows what the
         # target process(es) really had on screen (title-independent view).
         $seenTitles += "'$($w.Title)'"
-        if ($w.Title -notlike "*$TitleMatch*") { continue }
+        # Substring, case-insensitive (the documented contract). Not -like: `[ ]`
+        # in a title (e.g. 'Client [Login]') is a wildcard char class there.
+        if ($w.Title.IndexOf($TitleMatch, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
         if ($RequireCisco -and -not (Test-TrustedCiscoProcess -Proc $p)) { continue }
         $hits += $w
     }
@@ -208,8 +216,9 @@ function Find-SingleWindow {
             '. Bring the target window to the front and retry.')
     }
     if ($hits.Count -gt 1) {
-        throw ("Multiple matching windows found ($($hits.Count)); aborting to " +
-            'avoid typing into the wrong one.')
+        $hitTitles = ($hits | ForEach-Object { "'$($_.Title)'" }) -join ' | '
+        throw ("Multiple matching windows found ($($hits.Count)): $hitTitles; " +
+            'aborting to avoid typing into the wrong one.')
     }
     return $hits[0]
 }
@@ -254,6 +263,25 @@ function Invoke-WindowMatchSelfTest {
     Write-Host 'All window-matcher self-tests passed.'
 }
 
+function Invoke-ConfigContractSelfTest {
+    # Machine-check the config contract: dot-source the shipped template into a
+    # CHILD scope (so it can't touch this script's state) and assert it defines
+    # every name in $script:RequiredConfigNames. Catches drift between the
+    # template and the required-names list before it fails at a live run.
+    $templatePath = Join-Path $PSScriptRoot 'config.example.ps1'
+    $missing = & {
+        . $templatePath
+        foreach ($name in $script:RequiredConfigNames) {
+            if (-not (Test-Path "variable:$name")) { $name }
+        }
+    }
+    if ($missing) {
+        throw ("config.example.ps1 is missing required name(s): $($missing -join ', '). " +
+            'Update the template or $RequiredConfigNames so they match.')
+    }
+    Write-Host 'All config-contract self-tests passed.'
+}
+
 # --- Typing ----------------------------------------------------------------
 
 function Send-KeysToTarget {
@@ -275,18 +303,40 @@ function Send-KeysToTarget {
 
 # --- Secrets ---------------------------------------------------------------
 
+function Invoke-Op {
+    # Run op with $LASTEXITCODE authoritative. Under Windows PowerShell 5.1 with
+    # $ErrorActionPreference='Stop', a native command's stderr promotes to a
+    # terminating NativeCommandError - even on exit 0 (e.g. an op update notice
+    # after the Hello unlock) - which would abort before the caller's exit-code
+    # branch runs. Scope EAP to Continue so stderr is just discarded (2>$null)
+    # and only the exit code decides. The caller checks $LASTEXITCODE after the
+    # call (a PowerShell function return does not reset it).
+    param(
+        [Parameter(Mandatory)][string]$OpPath,
+        [Parameter(Mandatory)][string[]]$OpArgs
+    )
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        return & $OpPath @OpArgs 2>$null
+    } finally {
+        $ErrorActionPreference = $eap
+    }
+}
+
 function Get-OpSecrets {
     # username + password from the item JSON (by field purpose); the current
     # TOTP code from `op item get --otp` (the JSON only carries the otpauth
-    # seed, not the computed code). Two calls in one run = one Windows Hello
-    # unlock. Values are returned in plain strings held only in memory.
+    # seed, not the computed code). The two calls in one run share one Windows
+    # Hello unlock only if 1Password's auto-lock window covers both (else two
+    # prompts). Values are returned in plain strings held only in memory.
     param([string]$Vault, [string]$Item, [string]$OpPath)
 
     if (-not (Get-Command $OpPath -ErrorAction SilentlyContinue)) {
         throw "1Password CLI not found at '$OpPath'. Set OpPath in config.local.ps1 to the full op.exe path (find it with: (Get-Command op).Source)."
     }
 
-    $raw = & $OpPath item get $Item --vault $Vault --format json 2>$null
+    $raw = Invoke-Op -OpPath $OpPath -OpArgs @('item', 'get', $Item, '--vault', $Vault, '--format', 'json')
     if ($LASTEXITCODE -ne 0) {
         throw "op item get failed (exit $LASTEXITCODE). Check op is unlocked and the vault/item names are correct."
     }
@@ -299,7 +349,7 @@ function Get-OpSecrets {
     $username = ($parsed.fields | Where-Object { $_.purpose -eq 'USERNAME' } | Select-Object -First 1).value
     $password = ($parsed.fields | Where-Object { $_.purpose -eq 'PASSWORD' } | Select-Object -First 1).value
 
-    $totp = & $OpPath item get $Item --vault $Vault --otp 2>$null
+    $totp = Invoke-Op -OpPath $OpPath -OpArgs @('item', 'get', $Item, '--vault', $Vault, '--otp')
     if ($LASTEXITCODE -ne 0) {
         throw "op item get --otp failed (exit $LASTEXITCODE). Does the item have a one-time-password (TOTP) field?"
     }
@@ -365,9 +415,19 @@ function Show-FatalError {
 
 # --- Entry point -----------------------------------------------------------
 
+# Names config.local.ps1 must define (validated at load below). The config
+# contract self-test also asserts config.example.ps1 defines every one of these,
+# so template drift is caught by -SelfTest rather than at a live run.
+$script:RequiredConfigNames = @(
+    'OpVault', 'OpItem', 'OpPath', 'WindowTitleMatch', 'WindowProcessMatch',
+    'DelayAfterUsername', 'DelayAfterPassword', 'DelayAfterOtp',
+    'HandleAgreement', 'AgreementTimeoutMs', 'AcceptKey'
+)
+
 if ($SelfTest) {
     Invoke-EscapingSelfTest
     Invoke-WindowMatchSelfTest
+    Invoke-ConfigContractSelfTest
     return
 }
 
@@ -377,12 +437,14 @@ try {
     if (-not (Test-Path $configPath)) {
         throw "Missing config.local.ps1. Copy config.example.ps1 to config.local.ps1 and set OpVault/OpItem."
     }
+    # -DryRun is authoritative. config.local.ps1 is dot-sourced into this scope,
+    # so a stray `$DryRun = $false` in it would clobber the bound switch and turn
+    # a masked run into a live one (real secrets typed). Snapshot and re-assert.
+    $dryRunRequested = [bool]$DryRun
     . $configPath
+    $DryRun = $dryRunRequested
 
-    $required = 'OpVault', 'OpItem', 'OpPath', 'WindowTitleMatch', 'WindowProcessMatch',
-        'DelayAfterUsername', 'DelayAfterPassword', 'DelayAfterOtp',
-        'HandleAgreement', 'AgreementTimeoutMs', 'AcceptKey'
-    foreach ($name in $required) {
+    foreach ($name in $script:RequiredConfigNames) {
         if (-not (Test-Path "variable:$name")) {
             throw "config.local.ps1 is missing '$name'. Re-copy it from config.example.ps1."
         }
@@ -436,6 +498,10 @@ try {
 
     Write-Log 'typing OTP'
     Send-KeysToTarget -Handle $target.Handle -Text $otpText -Step 'otp' -ThenEnter
+    # All fields are typed; drop the plaintext references now so they aren't
+    # reachable through the agreement poll or a late hang below. Hygiene only:
+    # .NET strings aren't zeroed and copies linger in Get-OpSecrets's frame.
+    Remove-Variable secrets, userText, passText, otpText -ErrorAction SilentlyContinue
 
     if ($HandleAgreement -and -not $DryRun) {
         # DelayAfterOtp only bridges OTP -> agreement; skipped when nothing follows.

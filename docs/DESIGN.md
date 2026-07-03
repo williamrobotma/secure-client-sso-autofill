@@ -28,8 +28,10 @@
   share it (the one-time "authorize PowerShell" consent won't recur);
   (2) tune `DelayAfter*` down if screens load fast (cautiously - lockout risk);
   (3) decide whether to re-enable `HandleAgreement`;
-  (4) work through [REVIEW-2026-07-02.md](REVIEW-2026-07-02.md) (post-implementation
-  code review: 2 design decisions + a mechanical fix batch; delete it when drained).
+  (4) [REVIEW-2026-07-02.md](REVIEW-2026-07-02.md): mechanical + minor fix batch
+  landed 2026-07-03; remaining are the 2 design decisions (review-gate layer,
+  psd1 migration) and the agreement-window fix deferred until `HandleAgreement`
+  is re-enabled. Delete the review doc when those drain.
 - **Findings (2026-07-02):**
   - `OpPath`: PowerToys was started before op's PATH entry, so a hotkey launch
     inherited a stale PATH and couldn't find bare `op`. Fixed with a configurable
@@ -131,9 +133,10 @@ Manager "Start App" shortcut.
 
 Three independently-understandable pieces:
 
-1. **`op` (1Password CLI)** - secret source. A single
-   `op item get <item> --format json` call returns username, password, and the
-   current TOTP together, so Windows Hello prompts once per run.
+1. **`op` (1Password CLI)** - secret source. `op item get <item> --format json`
+   returns username and password; a second `op item get --otp` call returns the
+   current TOTP (the JSON carries only the OTP seed). The two calls prompt
+   Windows Hello once or twice, depending on 1Password's auto-lock window.
 2. **`sso-autofill.ps1`** - worker. Sources local config, fetches secrets,
    finds and focuses the Cisco login window, types each field with Enter
    between them, then waits for and accepts the agreement.
@@ -145,7 +148,7 @@ Three independently-understandable pieces:
 ```
 keypress
   -> KBM launches powershell (hidden)
-  -> op item get --format json        (1 Windows Hello unlock)
+  -> op item get: JSON + --otp        (Windows Hello unlock, once or twice)
   -> locate + verify identity + SetForegroundWindow(Cisco window)  [R1]
   -> re-verify foreground; type username; {ENTER}; sleep D1
   -> re-verify foreground; type password; {ENTER}; sleep D2
@@ -176,21 +179,21 @@ The script dot-sources `config.local.ps1` and fails visibly if it is missing.
 | `HandleAgreement` | attempt to accept the agreement | false (deferred for MVP) |
 | `AgreementTimeoutMs` | max wait for the agreement window | 15000 |
 | `AcceptKey` | keystroke sent to accept | `{ENTER}` |
-| `DryRun` | log steps, type into Notepad instead of Cisco, no secrets to Cisco | false |
 
 ### Secret retrieval
 
-- Two `op` calls in one run (one Windows Hello unlock - the desktop-app session
-  is cached across calls in the same run):
+- Two `op` calls in one run (one or two Windows Hello prompts: the desktop-app
+  session is cached briefly, so the second call reuses the first unlock only if
+  1Password's auto-lock window still covers it):
   1. `op item get $OpItem --vault $OpVault --format json` -> username + password
      from the fields whose `purpose` is `USERNAME` / `PASSWORD`.
   2. `op item get $OpItem --vault $OpVault --otp` -> the current TOTP code.
 - Why two calls, not one: the full-item JSON carries the OTP field's
   `otpauth://` seed, not the computed 6-digit code, and `--otp` cannot be
-  combined with `--format json` / `--fields`. Sequential calls in one run reuse
-  a single unlock, so the "one Windows Hello prompt" goal still holds. (Resolves
-  the build-time open item; this was the spec's sanctioned fallback, promoted to
-  primary.)
+  combined with `--format json` / `--fields`. The two calls share one unlock
+  when 1Password's auto-lock window covers both, else prompt twice - so the
+  outcome is one or two Hello prompts. (Resolves the build-time open item; this
+  was the spec's sanctioned fallback, promoted to primary.)
 - Requires `op` desktop-app integration + Windows Hello unlock enabled.
 
 ### Window targeting (the non-obvious safety point)
@@ -306,9 +309,9 @@ run the side-effect-free `-SelfTest`; `-DryRun` and live runs are collaborative
 (Windows Hello unlock is the user's; live runs risk account lockout).
 
 1. Static review of the script + `-SelfTest` (Claude). Done: R4 self-test passes.
-2. After installs: run with `-DryRun` - confirm one Windows Hello prompt,
-   correct username/password/OTP retrieved (typed into Notepad), correct step
-   sequencing and delays.
+2. After installs: run with `-DryRun` - confirm one or two Windows Hello prompts
+   (per 1Password's auto-lock window), correct username/password/OTP retrieved
+   (typed into Notepad), correct step sequencing and delays.
 3. Live: initiate a McGill connect, bring the login window to front, press the
    chord; confirm all three screens fill and the agreement is accepted.
 4. Tune delays / window match / agreement handling as needed.

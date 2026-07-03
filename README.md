@@ -109,16 +109,17 @@ self-closing popup - both work even when the script is launched hidden.
    ```powershell
    .\sso-autofill.ps1 -SelfTest
    ```
-   Confirms SendKeys special-character escaping is correct (R4) and runs
-   read-only window-matcher checks. Must print both
-   "All ... self-tests passed." lines.
+   Confirms SendKeys special-character escaping (R4), runs read-only
+   window-matcher checks, and verifies config.example.ps1 defines every required
+   setting. Must print all three "All ... self-tests passed." lines.
 2. **Dry run** - open and focus **Notepad**, then:
    ```powershell
    .\sso-autofill.ps1 -DryRun
    ```
-   Confirms one Windows Hello prompt and that username / password / OTP are
-   retrieved. It types **masked** values (`u:****`, `p:****`, `otp:****`) into
-   Notepad at the configured cadence - never the real secret.
+   Confirms one or two Windows Hello prompts (depending on 1Password's auto-lock
+   window) and that username / password / OTP are retrieved. It types **masked**
+   values (`u:****`, `p:****`, `otp:****`) into Notepad at the configured cadence
+   - never the real secret.
 3. **Live** - remove `-DryRun` from the hotkey Args. Start a McGill connect,
    get to the SSO **username** screen, bring the Cisco login window to the front,
    press your hotkey, complete Windows Hello, then **keep hands off** (~7s) while
