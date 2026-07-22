@@ -5,6 +5,10 @@ Entra ID) from 1Password - username, password, and TOTP 2FA - then accept
 the connection agreement. Worked example target: McGill University's VPN
 (`securevpn.mcgill.ca`).
 
+> **Platform: Windows 11 only** (uses `powershell.exe`, Windows Hello,
+> a PowerToys hotkey, and Win32 window APIs). Not WSL/Linux-portable
+> while this holds.
+
 > **Vibecoded.** This repository was designed and written collaboratively
 > with an AI assistant (Anthropic's Claude, via Claude Code). It was built
 > through a research -> spec -> plan -> build -> test workflow with a human in
@@ -33,8 +37,9 @@ is not available to end users unilaterally.
 Three small pieces:
 
 1. **`op` (1Password CLI)** - retrieves username, password, and the current
-   TOTP (two back-to-back calls in one run), unlocked by Windows Hello.
-   Secrets never touch the clipboard.
+   TOTP in one `op inject` call (a template of `op://` references, the OTP via
+   `?attribute=otp`), unlocked by a single Windows Hello prompt. Secrets never
+   touch the clipboard.
 2. **`sso-autofill.ps1`** (a PowerShell script) - finds and focuses the
    Cisco login window, then types each field with Enter between screens, and
    accepts the agreement.
@@ -116,14 +121,16 @@ self-closing popup - both work even when the script is launched hidden.
    ```powershell
    .\sso-autofill.ps1 -DryRun
    ```
-   Confirms one or two Windows Hello prompts (depending on 1Password's auto-lock
-   window) and that username / password / OTP are retrieved. It types **masked**
-   values (`u:****`, `p:****`, `otp:****`) into Notepad at the configured cadence
-   - never the real secret.
+   Confirms a single Windows Hello prompt and that username / password / OTP are
+   retrieved. It types **masked** values (`u:****`, `p:****`, `otp:****`) into
+   Notepad at the configured cadence - never the real secret. If a value comes
+   back empty, the `op://` reference did not resolve - check the field labels on
+   your item (username / password / one-time-password).
 3. **Live** - remove `-DryRun` from the hotkey Args. Start a McGill connect,
    get to the SSO **username** screen, bring the Cisco login window to the front,
-   press your hotkey, complete Windows Hello, then **keep hands off** (~7s) while
-   it fills all three screens - any focus change aborts it (R1). With
+   press your hotkey, complete Windows Hello, then **keep hands off** (~3s at the
+   1200 ms delays) while it fills all three screens - any focus change aborts it
+   (R1). With
    `HandleAgreement = $false` (the default until the flow is solid), click
    **Accept** yourself.
 

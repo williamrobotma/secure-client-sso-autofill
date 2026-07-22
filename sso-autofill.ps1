@@ -26,8 +26,8 @@
 
 .NOTES
     Test order: -SelfTest (side-effect-free), then -DryRun (into Notepad), then
-    live. Runs that fetch secrets prompt Windows Hello once or twice (the two
-    `op` calls share one unlock only if 1Password's auto-lock window covers both).
+    live. Runs that fetch secrets prompt Windows Hello once (a single `op inject`
+    call resolves username + password + TOTP in one authorization).
 #>
 [CmdletBinding()]
 param(
@@ -311,13 +311,19 @@ function Invoke-Op {
     # branch runs. Scope EAP to Continue so stderr is just discarded (2>$null)
     # and only the exit code decides. The caller checks $LASTEXITCODE after the
     # call (a PowerShell function return does not reset it).
+    # -StdinText (optional) is piped to op's stdin - used by `op inject` to pass
+    # the reference template without writing a temp file.
     param(
         [Parameter(Mandatory)][string]$OpPath,
-        [Parameter(Mandatory)][string[]]$OpArgs
+        [Parameter(Mandatory)][string[]]$OpArgs,
+        [string]$StdinText
     )
     $eap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+        if ($PSBoundParameters.ContainsKey('StdinText')) {
+            return $StdinText | & $OpPath @OpArgs 2>$null
+        }
         return & $OpPath @OpArgs 2>$null
     } finally {
         $ErrorActionPreference = $eap
@@ -325,39 +331,46 @@ function Invoke-Op {
 }
 
 function Get-OpSecrets {
-    # username + password from the item JSON (by field purpose); the current
-    # TOTP code from `op item get --otp` (the JSON only carries the otpauth
-    # seed, not the computed code). The two calls in one run share one Windows
-    # Hello unlock only if 1Password's auto-lock window covers both (else two
-    # prompts). Values are returned in plain strings held only in memory.
+    # One `op inject` call resolves all three references under a single Windows
+    # Hello unlock. (The prior design made two `op item get` calls - JSON for
+    # username/password, then `--otp` - which was the run's dominant cost and
+    # could prompt Hello twice when 1Password's auto-lock lapsed between them.)
+    # inject reads the template from stdin and writes the resolved values to
+    # stdout: no secret on disk. `?attribute=otp` yields the *computed* TOTP -
+    # the field itself holds only the otpauth seed, which is why the old JSON
+    # call could not supply it and a second `--otp` call was needed.
+    # Fields are addressed by reference: `username`/`password` are a login item's
+    # standard fields; the OTP field is referenced by its label. Confirm all three
+    # resolve for your item on the first live run (see README "Testing").
+    # Values are returned in plain strings held only in memory.
     param([string]$Vault, [string]$Item, [string]$OpPath)
 
     if (-not (Get-Command $OpPath -ErrorAction SilentlyContinue)) {
         throw "1Password CLI not found at '$OpPath'. Set OpPath in config.local.ps1 to the full op.exe path (find it with: (Get-Command op).Source)."
     }
 
-    $raw = Invoke-Op -OpPath $OpPath -OpArgs @('item', 'get', $Item, '--vault', $Vault, '--format', 'json')
+    # $Vault/$Item interpolate; the {{ }} delimiters and op:// are literal. One
+    # reference per line, so each line of inject's output is exactly one value.
+    $template = @"
+{{ op://$Vault/$Item/username }}
+{{ op://$Vault/$Item/password }}
+{{ op://$Vault/$Item/one-time password?attribute=otp }}
+"@
+    $resolved = Invoke-Op -OpPath $OpPath -OpArgs @('inject') -StdinText $template
     if ($LASTEXITCODE -ne 0) {
-        throw "op item get failed (exit $LASTEXITCODE). Check op is unlocked and the vault/item names are correct."
+        throw "op inject failed (exit $LASTEXITCODE). Check op is unlocked, the vault/item are correct, and the item has username / password / one-time-password fields."
     }
-    try {
-        $parsed = $raw | ConvertFrom-Json
-    } catch {
-        # Generic message: never echo $raw, which holds the secret JSON (R3).
-        throw 'Failed to parse the JSON returned by op item get.'
-    }
-    $username = ($parsed.fields | Where-Object { $_.purpose -eq 'USERNAME' } | Select-Object -First 1).value
-    $password = ($parsed.fields | Where-Object { $_.purpose -eq 'PASSWORD' } | Select-Object -First 1).value
 
-    $totp = Invoke-Op -OpPath $OpPath -OpArgs @('item', 'get', $Item, '--vault', $Vault, '--otp')
-    if ($LASTEXITCODE -ne 0) {
-        throw "op item get --otp failed (exit $LASTEXITCODE). Does the item have a one-time-password (TOTP) field?"
-    }
-    $totp = "$totp".Trim()
+    # Native stdout may arrive as one multi-line string or an array of lines;
+    # -split over @(...) handles both, and reads never echo a value (R3).
+    $lines = @($resolved) -split '\r?\n'
+    $username = $lines[0]
+    $password = $lines[1]
+    $totp     = "$($lines[2])".Trim()
 
-    if (-not $username) { throw 'No username field (purpose USERNAME) on the 1Password item.' }
-    if (-not $password) { throw 'No password field (purpose PASSWORD) on the 1Password item.' }
-    if (-not $totp)     { throw 'No TOTP code returned for the 1Password item.' }
+    if (-not $username) { throw 'No username resolved (op://.../username); confirm the field reference for your item.' }
+    if (-not $password) { throw 'No password resolved (op://.../password); confirm the field reference for your item.' }
+    if (-not $totp)     { throw 'No TOTP resolved (op://.../one-time password?attribute=otp); confirm the OTP field label and that it is a one-time-password field.' }
 
     return [pscustomobject]@{ Username = $username; Password = $password; Totp = $totp }
 }

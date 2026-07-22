@@ -5,87 +5,93 @@
     condition, enforced instead of remembered).
 
 .DESCRIPTION
-    Hook mode (default): reads the PreToolUse JSON from stdin. If the Bash
-    command contains a `git commit`, compares the staged-diff hash against
-    .claude/review-stamp and denies the tool call when they differ or no stamp
-    exists. Non-commit commands and an empty index pass through untouched.
+    Enforcement runs as git's native pre-commit hook: .githooks/pre-commit
+    (wired once per clone with `git config core.hooksPath .githooks`) invokes
+    this script with -CheckCommit, but only inside Claude Code's Bash env
+    (CLAUDECODE=1) - a human committing from a normal terminal is ungated.
 
-    Protocol: git add -A -> run the security-review skill -> stamp -> commit.
+    -CheckCommit hashes the staged diff at commit time and aborts (exit 1) when
+    it does not match .claude/review-stamp. Because git runs the hook against the
+    real index, every content-staging commit spelling is covered - env-var
+    prefixes, compounds, aliases, `cherry-pick -n` - with no command-line
+    parsing.
+
+    Protocol: git add -A -> run the security-review skill -> -Stamp -> commit.
+    Any later edit changes the staged diff and invalidates the stamp.
+
+    Caveats:
+      - Partial commits (`git commit <pathspec>`) hash only the pathspec'd temp
+        index, so they never match the full-tree stamp - blocked. Commit the
+        whole tree.
+      - Empty-diff spellings (`--amend` with a clean index or a message reword,
+        `--allow-empty`) stage no diff, so the gate allows them - benign: they
+        record no reviewable content change.
+      - `--no-verify` skips the hook (a deliberate spelling; outside the
+        forgetting-not-malice threat model).
 
 .PARAMETER Stamp
     Write the current staged-diff hash to .claude/review-stamp (gitignored).
     Run after a security review passes, with the changes already staged.
+
+.PARAMETER CheckCommit
+    Pre-commit gate: exit 0 to allow the commit, 1 to abort it.
 #>
-param([switch]$Stamp)
+param(
+    [switch]$Stamp,
+    [switch]$CheckCommit
+)
 $ErrorActionPreference = 'Stop'
 
-# .claude/hooks -> repo root, independent of the hook's working directory.
+# .claude/hooks -> repo root, independent of the caller's working directory.
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $stampPath = Join-Path $repoRoot '.claude\review-stamp'
 
-function Get-StagedDiffHash {
-    # -Stamp calls with no arg (capture here); the gate passes the diff it
-    # already captured for the emptiness check, so `git diff --cached` runs
-    # once per gated commit rather than twice.
-    param([string]$Diff)
-    if (-not $PSBoundParameters.ContainsKey('Diff')) {
-        $Diff = (& git -C $repoRoot diff --cached) -join "`n"
-    }
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Diff))
-    return [System.BitConverter]::ToString($hash) -replace '-', ''
+function Get-StagedDiff {
+    $diff = (& git -C $repoRoot diff --cached) -join "`n"
+    # A nonzero native git exit does NOT throw under $ErrorActionPreference; an
+    # empty $diff would then read as "nothing staged" and allow the commit. Throw
+    # so -CheckCommit's catch blocks and -Stamp aborts instead of stamping garbage.
+    if ($LASTEXITCODE -ne 0) { throw "git diff --cached failed (exit $LASTEXITCODE)" }
+    return $diff
 }
 
-function Deny {
-    param([string]$Reason)
-    @{ hookSpecificOutput = @{
-        hookEventName            = 'PreToolUse'
-        permissionDecision       = 'deny'
-        permissionDecisionReason = $Reason
-    } } | ConvertTo-Json -Compress
-    exit 0
+function Get-DiffHash {
+    param([string]$Diff)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Diff))
+    return [System.BitConverter]::ToString($bytes) -replace '-', ''
 }
 
 if ($Stamp) {
-    Set-Content -Path $stampPath -Value (Get-StagedDiffHash)
+    Set-Content -Path $stampPath -Value (Get-DiffHash (Get-StagedDiff))
     Write-Host 'review stamp written for the current staged diff'
     return
 }
 
+# Any invocation without a mode is a no-op: the gate only acts in -Stamp or
+# -CheckCommit. (Keeps a stale Bash(git *) PreToolUse call, if one lingers
+# before settings.json reloads, from erroring on every git command.)
+if (-not $CheckCommit) { return }
+
 try {
-    $hook = [Console]::In.ReadToEnd() | ConvertFrom-Json
-    # Split compound commands; anchor per part so quoted text ("git commit") in
-    # some other command does not trip the gate.
-    $parts = "$($hook.tool_input.command)" -split '&&|\|\||;|\||\r?\n'
-    $isCommit = $false
-    foreach ($p in $parts) {
-        if ($p -match '^\s*git(\.exe)?\s.*\bcommit\b') { $isCommit = $true }
-    }
-    if (-not $isCommit) { exit 0 }
+    $diff = Get-StagedDiff
+    if (-not $diff) { return }  # nothing staged: let git report it
 
-    # The stamp vouches for the staged diff ONLY. Anything unstaged or untracked
-    # could still reach this commit (-a/--all, pathspec forms, a git add earlier
-    # in the same compound), so require a fully staged worktree before the hash
-    # compare. Staged-only lines ('M ', 'A ', ...) are fine; '??' and a dirty
-    # worktree column are not.
-    $notStaged = @(& git -C $repoRoot status --porcelain) |
-        Where-Object { $_ -match '^\?\?' -or $_[1] -ne ' ' }
-    if ($notStaged) {
-        Deny ('Security-review gate: unstaged/untracked changes present, and the ' +
-            'review stamp only covers the staged diff. git add -A in its own ' +
-            'command, re-run the security review, re-stamp, then commit.')
-    }
-    $stagedDiff = (& git -C $repoRoot diff --cached) -join "`n"
-    if (-not $stagedDiff) { exit 0 }  # nothing to commit: let git report it
+    $stamped = if (Test-Path $stampPath) {
+        "$(Get-Content $stampPath -TotalCount 1)".Trim()
+    } else { '' }
+    if ((Get-DiffHash $diff) -eq $stamped) { return }
 
-    $stamped = if (Test-Path $stampPath) { "$(Get-Content $stampPath -TotalCount 1)".Trim() } else { '' }
-    if ((Get-StagedDiffHash -Diff $stagedDiff) -eq $stamped) { exit 0 }
-
-    Deny ('Security-review gate: the staged diff has no matching review stamp ' +
+    [Console]::Error.WriteLine(
+        'Security-review gate: the staged diff has no matching review stamp ' +
         '(DESIGN.md wrap-up condition). Run the security-review skill on the ' +
-        'pending changes, then: powershell -NoProfile -File .claude/hooks/review-gate.ps1 -Stamp')
+        'pending changes, then: powershell -NoProfile -File ' +
+        '.claude/hooks/review-gate.ps1 -Stamp')
+    exit 1
 } catch {
-    # Fail closed: a gate that errors must not wave commits through.
-    Deny ("Security-review gate errored ($($_.Exception.Message)). Fix " +
-        '.claude/hooks/review-gate.ps1 (or commit from your own terminal).')
+    # Fail closed: a gate that errors must abort the commit, not wave it through.
+    [Console]::Error.WriteLine(
+        "Security-review gate errored ($($_.Exception.Message)). Fix " +
+        '.claude/hooks/review-gate.ps1, or commit from your own terminal.')
+    exit 1
 }

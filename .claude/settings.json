@@ -6,10 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/review-gate.ps1\"",
-            "if": "Bash(git *)",
-            "timeout": 30,
-            "statusMessage": "Checking security-review stamp"
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/op-guard.ps1\"",
+            "timeout": 15,
+            "statusMessage": "op-guard: checking for secret-print"
           }
         ]
       }
