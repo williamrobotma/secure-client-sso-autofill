@@ -8,8 +8,10 @@
 ## Current status / resume point
 
 - **Stage:** LIVE-validated (2026-07-02) - the MVP fills all three SSO screens
-  via the hotkey and connects. Tuning (prompts/delays) + optional agreement
-  auto-accept remain.
+  via the hotkey and connects. Speed pass 2026-07-08 (one `op inject` call +
+  1200 ms delays) is code-complete and `-SelfTest`-clean, PENDING one live run
+  to confirm the `op://` references resolve and the tighter delays hold.
+  Optional agreement auto-accept remains.
 - **Done:** research; this design; repo scaffolded and pushed; `sso-autofill.ps1`,
   `config.example.ps1`, README built + security-reviewed + committed. `op` +
   PowerToys installed; 1Password CLI desktop integration enabled. Native
@@ -24,14 +26,17 @@
   login window, filled username/password/TOTP, connected (Accept clicked
   manually). `WindowTitleMatch` set to `Cisco Secure Client - Login` in
   config.local (uniquely the acwebhelper form window). Remaining polish:
-  (1) one unlock prompt - lengthen 1Password auto-lock so the two `op` calls
-  share it (the one-time "authorize PowerShell" consent won't recur);
-  (2) tune `DelayAfter*` down if screens load fast (cautiously - lockout risk);
+  (1) one unlock prompt - DONE 2026-07-08: `Get-OpSecrets` now makes a single
+      `op inject` call (was two `op item get` calls that could prompt twice);
+  (2) tune `DelayAfter*` down: done 2026-07-08, set to 1200 ms (aggressive) in
+      config.local - validate live, bump if a value lands on the wrong screen;
   (3) decide whether to re-enable `HandleAgreement`;
-  (4) [REVIEW-2026-07-02.md](REVIEW-2026-07-02.md): mechanical + minor fix batch
-  landed 2026-07-03; remaining are the 2 design decisions (review-gate layer,
-  psd1 migration) and the agreement-window fix deferred until `HandleAgreement`
-  is re-enabled. Delete the review doc when those drain.
+  (3b) [SPEED-2026-07-09.md](SPEED-2026-07-09.md): speed/robustness work list - validate the landed `op inject`+delay changes, Hello-latency diagnostics, and the probe-gated closed-loop-waits decision (probe-uia.ps1); written as the handoff for fresh sessions;
+  (4) code review of 2026-07-02 (its work-list doc REVIEW-2026-07-02.md is
+  deleted with this batch): mechanical + minor fix batch landed 2026-07-03;
+  the review-gate layer was resolved 2026-07-03 (native git pre-commit hook).
+  Still open: the psd1-migration design decision and the agreement-window fix,
+  deferred until `HandleAgreement` is re-enabled.
 - **Findings (2026-07-02):**
   - `OpPath`: PowerToys was started before op's PATH entry, so a hotkey launch
     inherited a stale PATH and couldn't find bare `op`. Fixed with a configurable
@@ -52,6 +57,7 @@
   - Prompts: two `op` calls (item JSON + `--otp`; no single command returns the
     computed TOTP) can mean two unlocks unless 1Password's unlock window covers
     both. Typing delays (~7s) are tunable in config.local.ps1.
+    (Superseded 2026-07-08: one `op inject` call - one unlock; delays now 1200 ms.)
 - **Execution:** PowerShell runs here now (the earlier deny-rule is off).
   `-SelfTest` is side-effect-free and Claude-runnable - R4 verified 2026-07-01,
   all cases pass. `-DryRun` and live runs must be launched interactively by the
@@ -62,8 +68,8 @@
   [CLAUDE.md](../CLAUDE.md) for the working rules.
 - **Wrap-up condition (durable):** run the `security-review` skill on the
   pending changes before every commit / sync-point on this task. Enforced by
-  a PreToolUse hook that denies `git commit` without a review stamp for the
-  staged diff - see "Commit gate" in [CLAUDE.md](../CLAUDE.md).
+  a native git pre-commit hook that aborts `git commit` without a review stamp
+  for the staged diff - see "Commit gate" in [CLAUDE.md](../CLAUDE.md).
 
 ## Context
 
@@ -133,10 +139,12 @@ Manager "Start App" shortcut.
 
 Three independently-understandable pieces:
 
-1. **`op` (1Password CLI)** - secret source. `op item get <item> --format json`
-   returns username and password; a second `op item get --otp` call returns the
-   current TOTP (the JSON carries only the OTP seed). The two calls prompt
-   Windows Hello once or twice, depending on 1Password's auto-lock window.
+1. **`op` (1Password CLI)** - secret source. One `op inject` call resolves a
+   template of three secret references (username, password, and
+   `...?attribute=otp` for the *computed* TOTP) in a single authorization -> one
+   Windows Hello prompt. (Earlier: two `op item get` calls - JSON for
+   username/password, then `--otp` - which prompted Hello once or twice and was
+   the run's dominant cost.)
 2. **`sso-autofill.ps1`** - worker. Sources local config, fetches secrets,
    finds and focuses the Cisco login window, types each field with Enter
    between them, then waits for and accepts the agreement.
@@ -148,7 +156,7 @@ Three independently-understandable pieces:
 ```
 keypress
   -> KBM launches powershell (hidden)
-  -> op item get: JSON + --otp        (Windows Hello unlock, once or twice)
+  -> op inject: one template -> username + password + computed TOTP  (Windows Hello unlock, once)
   -> locate + verify identity + SetForegroundWindow(Cisco window)  [R1]
   -> re-verify foreground; type username; {ENTER}; sleep D1
   -> re-verify foreground; type password; {ENTER}; sleep D2
@@ -182,18 +190,23 @@ The script dot-sources `config.local.ps1` and fails visibly if it is missing.
 
 ### Secret retrieval
 
-- Two `op` calls in one run (one or two Windows Hello prompts: the desktop-app
-  session is cached briefly, so the second call reuses the first unlock only if
-  1Password's auto-lock window still covers it):
-  1. `op item get $OpItem --vault $OpVault --format json` -> username + password
-     from the fields whose `purpose` is `USERNAME` / `PASSWORD`.
-  2. `op item get $OpItem --vault $OpVault --otp` -> the current TOTP code.
-- Why two calls, not one: the full-item JSON carries the OTP field's
-  `otpauth://` seed, not the computed 6-digit code, and `--otp` cannot be
-  combined with `--format json` / `--fields`. The two calls share one unlock
-  when 1Password's auto-lock window covers both, else prompt twice - so the
-  outcome is one or two Hello prompts. (Resolves the build-time open item; this
-  was the spec's sanctioned fallback, promoted to primary.)
+- One `op inject` call per run -> a single Windows Hello prompt. inject reads a
+  template of three `op://` references from stdin and writes the resolved values
+  to stdout (no secret on disk); each reference is on its own line, so each
+  output line is exactly one value:
+  1. `op://$OpVault/$OpItem/username`
+  2. `op://$OpVault/$OpItem/password`
+  3. `op://$OpVault/$OpItem/one-time password?attribute=otp` -> the *computed*
+     6-digit TOTP (via the `?attribute=otp` query param; the field itself holds
+     only the `otpauth://` seed).
+- Why inject, not `op item get`: the full-item JSON carries the OTP seed, not the
+  computed code, and `--otp` cannot combine with `--format json` - so the old
+  code needed a *second* `op` call, which was the run's dominant cost and could
+  prompt Hello twice when 1Password's auto-lock lapsed between the two. A
+  secret-reference template gets all three in one authorization.
+- Trade-off vs. the old JSON path: references address username/password by the
+  login item's standard field names (not by `purpose`), so confirm the three
+  references resolve for the item on the first live run.
 - Requires `op` desktop-app integration + Windows Hello unlock enabled.
 
 ### Window targeting (the non-obvious safety point)
@@ -309,9 +322,9 @@ run the side-effect-free `-SelfTest`; `-DryRun` and live runs are collaborative
 (Windows Hello unlock is the user's; live runs risk account lockout).
 
 1. Static review of the script + `-SelfTest` (Claude). Done: R4 self-test passes.
-2. After installs: run with `-DryRun` - confirm one or two Windows Hello prompts
-   (per 1Password's auto-lock window), correct username/password/OTP retrieved
-   (typed into Notepad), correct step sequencing and delays.
+2. After installs: run with `-DryRun` - confirm a single Windows Hello prompt,
+   correct username/password/OTP retrieved (typed into Notepad), correct step
+   sequencing and delays.
 3. Live: initiate a McGill connect, bring the login window to front, press the
    chord; confirm all three screens fill and the agreement is accepted.
 4. Tune delays / window match / agreement handling as needed.
@@ -330,7 +343,9 @@ Resolved at build:
 - **`op` retrieval:** two calls (JSON for username/password by field `purpose`;
   `--otp` for the current code) - no single command returns the computed TOTP.
   Shares one unlock only if 1Password's auto-lock window covers both; else two
-  prompts. See "Secret retrieval".
+  prompts. See "Secret retrieval". (Superseded 2026-07-08 speed pass: one
+  `op inject` call resolving `op://` references, `?attribute=otp` for the
+  computed TOTP - one unlock. See "Resolved 2026-07-08" below.)
 - **`-DryRun` is a script switch**, not a config value (an ad-hoc test toggle;
   `config.example.ps1` notes this). `-SelfTest` added to satisfy R4's
   "unit-checked before live use" without a separate test file.
@@ -348,11 +363,16 @@ Resolved at build:
 Still open (optional polish; MVP works without them):
 - Agreement auto-accept: deferred (`HandleAgreement=$false`, manual Accept);
   re-enable + tune `AgreementTimeoutMs` when ready.
-- One unlock prompt: lengthen 1Password auto-lock so the two `op` calls share
-  it. Alternative lead (untested): a single `op inject` call resolving
-  `op://vault/item/field` references can return all three values in one
-  process/authorization - `?attr=otp` yields the *computed* TOTP in a secret
-  reference (unlike `op item get`'s JSON, which only has the seed). Needs one
-  live Hello-gated test; if it works, `Get-OpSecrets` collapses to one call.
-- Speed: lower `DelayAfter*` if the SSO screens load faster than the defaults.
 - 1Password vault + item reference (user-provided, into `config.local.ps1`).
+
+Resolved 2026-07-08 (speed pass; the run log showed `op`/Hello retrieval at
+10-29 s dominating a ~16 s run, typing delays ~5 s second):
+- One Hello prompt: `Get-OpSecrets` now makes a single `op inject` call
+  resolving all three references (`?attribute=otp` yields the computed TOTP),
+  replacing the two `op item get` calls that could prompt Hello twice. This was
+  the "one unlock" open item; the `op inject` lead is now the implementation.
+  Pending: confirm the references resolve on the first live run.
+- Delays: `config.local.ps1` `DelayAfter*` lowered to 1200 ms (aggressive - the
+  SSO screens loaded faster than the 2500 ms default). Validate live; bump if a
+  value lands on the wrong screen. `config.example.ps1` keeps the safe 2500 ms
+  default for new users.

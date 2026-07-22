@@ -1,0 +1,12 @@
+#!/bin/sh
+# Security-review commit gate (native git hook).
+# Wire once per clone:  git config core.hooksPath .githooks
+#
+# Enforce only inside Claude Code's Bash env (CLAUDECODE=1); a human committing
+# from a normal terminal is ungated. Hashing is delegated to review-gate.ps1 so
+# the stamp and the check compute an identical hash. git runs this against the
+# real index at commit time, so it fires on every commit spelling.
+[ "$CLAUDECODE" = "1" ] || exit 0
+root=$(git rev-parse --show-toplevel)
+powershell.exe -NoProfile -ExecutionPolicy Bypass \
+    -File "$root/.claude/hooks/review-gate.ps1" -CheckCommit

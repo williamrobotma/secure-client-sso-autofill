@@ -10,6 +10,10 @@ config.local.ps1
 # Machine state for the commit review gate (.claude/hooks/review-gate.ps1)
 .claude/review-stamp
 
+# Per-machine permission grants (also in the global git excludes on this
+# machine; listed here so the protection travels with the repo)
+.claude/settings.local.json
+
 # Windows
 Thumbs.db
 Desktop.ini
