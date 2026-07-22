@@ -3,6 +3,9 @@
 Project-scoped working notes for this repo. Design + security requirements live
 in [docs/DESIGN.md](docs/DESIGN.md).
 
+Platform: Windows 11 only (`powershell.exe`, Windows Hello, PowerToys hotkey) -
+unlike the usual WSL-first-class default. Hooks and scripts here may assume it.
+
 ## Running the PowerShell worker (Windows)
 
 - **Quoting `powershell.exe -Command` from the Bash tool (Git Bash):** wrap the
@@ -43,9 +46,9 @@ in [docs/DESIGN.md](docs/DESIGN.md).
   reviewable content); `--no-verify` skips the hook (deliberate spelling,
   outside the forgetting-not-malice threat model).
 - **Every Edit/Write of a `.ps1`** runs `.claude/hooks/verify-ps1.ps1`
-  (parse check + `sso-autofill.ps1 -SelfTest`) as a PostToolUse hook in
-  `.claude/settings.json`; failures are fed back to Claude automatically, so a
-  broken edit is caught at edit time.
+  (parse check + `sso-autofill.ps1 -SelfTest` + `op-guard.ps1 -SelfTest`) as a
+  PostToolUse hook in `.claude/settings.json`; failures are fed back to Claude
+  automatically, so a broken edit is caught at edit time.
 
 ## op / vault hygiene
 
@@ -56,3 +59,9 @@ in [docs/DESIGN.md](docs/DESIGN.md).
   resolving username + password + computed TOTP in one authorization).
 - Never print secret field values. When inspecting an item, select only
   `id`/`label`/`purpose`/`type`; never `value` or `--otp` output.
+  - Enforced, not just remembered: `.claude/hooks/op-guard.ps1` (a
+    PreToolUse(Bash) hook in `.claude/settings.json`) blocks `--otp`,
+    `--reveal`, `--share-link`, `op read`, and secret-labeled `--fields` in
+    any flag position, so the machine-local `op item get *` allow cannot
+    auto-approve a secret print. Block-list policy; bare `op item get X` is
+    allowed (op conceals secrets by default). `-SelfTest` runs its suite.

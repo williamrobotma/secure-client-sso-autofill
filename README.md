@@ -5,6 +5,10 @@ Entra ID) from 1Password - username, password, and TOTP 2FA - then accept
 the connection agreement. Worked example target: McGill University's VPN
 (`securevpn.mcgill.ca`).
 
+> **Platform: Windows 11 only** (uses `powershell.exe`, Windows Hello,
+> a PowerToys hotkey, and Win32 window APIs). Not WSL/Linux-portable
+> while this holds.
+
 > **Vibecoded.** This repository was designed and written collaboratively
 > with an AI assistant (Anthropic's Claude, via Claude Code). It was built
 > through a research -> spec -> plan -> build -> test workflow with a human in

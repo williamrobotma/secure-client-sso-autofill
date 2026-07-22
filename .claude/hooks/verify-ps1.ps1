@@ -43,4 +43,19 @@ if ($selfTestExit -ne 0) {
     [Console]::Error.WriteLine('sso-autofill.ps1 -SelfTest FAILED after this edit')
     exit 2
 }
+
+# op-guard (PreToolUse secret-print guard) has its own side-effect-free suite;
+# run it too so a broken guard is caught at edit time, same as the worker.
+$opGuard = Join-Path $repoRoot '.claude\hooks\op-guard.ps1'
+if (Test-Path -LiteralPath $opGuard) {
+    $ErrorActionPreference = 'Continue'
+    $guardOut = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $opGuard -SelfTest 2>&1
+    $guardExit = $LASTEXITCODE
+    $ErrorActionPreference = $eap
+    if ($guardExit -ne 0) {
+        [Console]::Error.WriteLine(($guardOut | Out-String))
+        [Console]::Error.WriteLine('op-guard.ps1 -SelfTest FAILED after this edit')
+        exit 2
+    }
+}
 exit 0
